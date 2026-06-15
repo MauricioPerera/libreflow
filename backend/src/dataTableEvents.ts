@@ -17,6 +17,23 @@ export const triggerContext = new AsyncLocalStorage<{ depth: number }>();
 
 export const MAX_TRIGGER_DEPTH = 3;
 
+/**
+ * Tables that have at least one active workflow subscribed to their writes. Maintained by
+ * the triggerManager. Lets db.ts skip event-only work (and the existence SELECT in
+ * upsert/increment) for the common case where nobody is watching the table.
+ */
+export const subscribedTables = new Set<string>();
+
+/** Whether a specific table has any reactive subscriber. */
+export function hasRowSubscribers(tableId: string): boolean {
+  return subscribedTables.has(tableId);
+}
+
+/** Whether any table at all has a reactive subscriber (cheap global short-circuit). */
+export function anyRowSubscribers(): boolean {
+  return subscribedTables.size > 0;
+}
+
 export interface RowEvent {
   tableId: string;
   rowId: string;
@@ -25,13 +42,16 @@ export interface RowEvent {
   depth: number;
 }
 
-/** Emits a row event unless the trigger-chain depth has hit the cap (prevents cascades). */
+/**
+ * Emits a row event, unless: nobody subscribes to the table (no work to do), or the
+ * trigger-chain depth has hit the cap (cascade guard).
+ */
 export function emitRowEvent(tableId: string, rowId: string, event: 'insert' | 'update', data: any) {
+  if (!subscribedTables.has(tableId)) return;
   const depth = triggerContext.getStore()?.depth ?? 0;
   if (depth >= MAX_TRIGGER_DEPTH) {
     console.warn(`[DataTableTrigger] Max depth (${MAX_TRIGGER_DEPTH}) reached — not emitting "${event}" on table ${tableId}.`);
     return;
   }
-  if (dataTableBus.listenerCount('row') === 0) return;
   dataTableBus.emit('row', { tableId, rowId, event, data, depth } as RowEvent);
 }

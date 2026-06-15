@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import { WorkflowEngine } from './engine.js';
 import { executeWorkflowAndRecord } from './executor.js';
 import { 
@@ -42,6 +43,19 @@ import crypto from 'crypto';
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// Gzip/deflate responses — meaningful for large JSON payloads (execution reports,
+// tools/list, data-table rows). SSE (text/event-stream) is excluded: compression buffers
+// and would stall the MCP SSE handshake / streamed responses.
+app.use(
+  compression({
+    filter: (req, res) => {
+      const type = res.getHeader('Content-Type');
+      if (typeof type === 'string' && type.includes('text/event-stream')) return false;
+      return compression.filter(req, res);
+    },
+  })
+);
 
 // CORS: restrict to an explicit allowlist in production; permissive in dev.
 const corsOrigins = process.env.LF_CORS_ORIGINS;

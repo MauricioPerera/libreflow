@@ -9,6 +9,11 @@ export interface ExecuteOptions {
 // triggers (webhook/cron/manual) don't overlap and clobber shared state. (DATA-15)
 const workflowLocks = new Map<string, Promise<unknown>>();
 
+// Prune old executions only every Nth run per workflow instead of on every execution
+// (the prune DELETE is comparatively expensive). Retention overshoots by at most N rows.
+const PRUNE_EVERY = 20;
+const runsSincePrune = new Map<string, number>();
+
 export async function executeWorkflowAndRecord(
   workflow: any,
   payload: any = {},
@@ -71,8 +76,14 @@ async function runWorkflowAndRecord(
         }
       }
 
-      // Enforce retention so executions don't grow without bound.
-      await pruneOldExecutions(workflow.id);
+      // Enforce retention so executions don't grow without bound — throttled.
+      const since = (runsSincePrune.get(workflow.id) || 0) + 1;
+      if (since >= PRUNE_EVERY) {
+        runsSincePrune.set(workflow.id, 0);
+        await pruneOldExecutions(workflow.id);
+      } else {
+        runsSincePrune.set(workflow.id, since);
+      }
     } catch (dbErr) {
       console.error('[Executor] Error saving execution:', dbErr);
     }

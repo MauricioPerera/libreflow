@@ -2,7 +2,7 @@ import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import path from 'path';
 import { encrypt, decrypt } from './encryption.js';
-import { emitRowEvent } from './dataTableEvents.js';
+import { emitRowEvent, hasRowSubscribers, anyRowSubscribers } from './dataTableEvents.js';
 
 let db: Database<sqlite3.Database, sqlite3.Statement>;
 
@@ -461,7 +461,10 @@ export async function upsertDataTableRow(tableId: string, data: Record<string, a
   if (!keyColumn) throw new Error('Upsert requires the data table to have a key column.');
   const rowKey = computeRowKey(keyColumn, data);
   if (rowKey === null) throw new Error(`Row is missing the key column "${keyColumn}".`);
-  const existed = await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  // The existence check only feeds the insert/update event — skip it when nobody subscribes.
+  const existed = hasRowSubscribers(tableId)
+    ? await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey])
+    : null;
   const id = `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   await db.run(
     `INSERT INTO data_table_rows (id, table_id, row_key, data) VALUES (?, ?, ?, ?)
@@ -481,7 +484,9 @@ export async function incrementDataTableRow(tableId: string, key: string, field:
   const keyColumn = await getTableKeyColumn(tableId);
   if (!keyColumn) throw new Error('Increment requires the data table to have a key column.');
   const rowKey = String(key);
-  const existed = await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  const existed = hasRowSubscribers(tableId)
+    ? await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey])
+    : null;
   const id = `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   await db.run(
     `INSERT INTO data_table_rows (id, table_id, row_key, data)
@@ -588,8 +593,11 @@ export async function updateDataTableRow(rowId: string, data: Record<string, any
     'UPDATE data_table_rows SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
     [dataStr, rowId]
   );
-  const row = await db.get('SELECT table_id FROM data_table_rows WHERE id = ?', [rowId]);
-  if (row) emitRowEvent(row.table_id, rowId, 'update', data);
+  // Only resolve the table_id (extra SELECT) when some table actually has a subscriber.
+  if (anyRowSubscribers()) {
+    const row = await db.get('SELECT table_id FROM data_table_rows WHERE id = ?', [rowId]);
+    if (row) emitRowEvent(row.table_id, rowId, 'update', data);
+  }
 }
 
 export async function deleteDataTableRow(rowId: string) {

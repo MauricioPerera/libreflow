@@ -2,7 +2,7 @@ import { schedule, validate, ScheduledTask } from 'node-cron';
 import { getActiveWorkflows, getWorkflowById } from './db.js';
 import { executeWorkflowAndRecord } from './executor.js';
 import { cronTooFrequent } from './security.js';
-import { dataTableBus, triggerContext, RowEvent } from './dataTableEvents.js';
+import { dataTableBus, triggerContext, RowEvent, subscribedTables } from './dataTableEvents.js';
 
 interface DataTableSub { workflowId: string; event: string }
 
@@ -78,6 +78,7 @@ class TriggerManager {
         const subs = this.dataTableSubs.get(tableId) || [];
         subs.push({ workflowId: workflow.id, event: tableEvent });
         this.dataTableSubs.set(tableId, subs);
+        subscribedTables.add(tableId);
         console.log(`[TriggerManager] Subscribed workflow "${workflow.name}" (${workflow.id}) to table ${tableId} [${tableEvent}]`);
         continue;
       }
@@ -136,8 +137,12 @@ class TriggerManager {
     // Remove this workflow's data-table subscriptions.
     for (const [tableId, subs] of this.dataTableSubs.entries()) {
       const remaining = subs.filter(s => s.workflowId !== workflowId);
-      if (remaining.length === 0) this.dataTableSubs.delete(tableId);
-      else if (remaining.length !== subs.length) this.dataTableSubs.set(tableId, remaining);
+      if (remaining.length === 0) {
+        this.dataTableSubs.delete(tableId);
+        subscribedTables.delete(tableId);
+      } else if (remaining.length !== subs.length) {
+        this.dataTableSubs.set(tableId, remaining);
+      }
     }
   }
 

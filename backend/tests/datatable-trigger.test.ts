@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { dataTableBus, triggerContext, emitRowEvent, MAX_TRIGGER_DEPTH, RowEvent } from '../src/dataTableEvents.js';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { dataTableBus, triggerContext, emitRowEvent, MAX_TRIGGER_DEPTH, RowEvent, subscribedTables } from '../src/dataTableEvents.js';
+
+// emitRowEvent now no-ops for tables nobody subscribes to; register the test table.
+beforeAll(() => { subscribedTables.add('t1'); });
 
 function capture(fn: () => void): RowEvent[] {
   const events: RowEvent[] = [];
