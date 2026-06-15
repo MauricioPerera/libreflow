@@ -4,6 +4,42 @@ import { Worker } from 'worker_threads';
 import { executeMcpToolCall } from './mcp.js';
 import { assertSafeUrl, isUnsafeKey } from './security.js';
 
+/**
+ * Loads a stored credential and returns the auth to apply: headers to merge and query
+ * params to append. Single source of truth for the credential→auth scheme (basicAuth →
+ * Authorization: Basic; apiKey → custom header or query param), shared by httpRequest,
+ * mcpToolCall and aiAgent.
+ */
+export async function resolveCredentialAuth(credentialId?: string): Promise<{ headers: Record<string, string>; query: Record<string, string> }> {
+  const headers: Record<string, string> = {};
+  const query: Record<string, string> = {};
+  if (!credentialId) return { headers, query };
+  const cred = await getCredentialById(credentialId);
+  if (!cred || !cred.data) {
+    console.warn(`[Credential] Not found or failed to load: ${credentialId}`);
+    return { headers, query };
+  }
+  if (cred.type === 'basicAuth') {
+    const { user = '', password = '' } = cred.data;
+    headers['Authorization'] = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
+  } else if (cred.type === 'apiKey') {
+    const { name = '', value = '', in: keyIn = 'header' } = cred.data;
+    if (name && value) {
+      if (keyIn === 'query') query[name] = value;
+      else headers[name] = value;
+    }
+  }
+  return { headers, query };
+}
+
+/** Appends query params to a URL string (no-op when empty). */
+function appendQueryParams(url: string, query: Record<string, string>): string {
+  if (Object.keys(query).length === 0) return url;
+  const u = new URL(url);
+  for (const [k, v] of Object.entries(query)) u.searchParams.append(k, v);
+  return u.toString();
+}
+
 /** Builds a plain object from key/value pairs, skipping prototype-pollution keys. */
 function safeAssignKeyValues(values: any[]): Record<string, any> {
   const result: Record<string, any> = {};
@@ -196,27 +232,9 @@ const httpRequestNode: LibreFlowNodeDefinition = {
     let requestUrl = url;
 
     if (authentication === 'genericCredential' && credentialId) {
-      const cred = await getCredentialById(credentialId);
-      if (cred && cred.data) {
-        if (cred.type === 'basicAuth') {
-          const { user = '', password = '' } = cred.data;
-          const authString = Buffer.from(`${user}:${password}`).toString('base64');
-          headerObj['Authorization'] = `Basic ${authString}`;
-        } else if (cred.type === 'apiKey') {
-          const { name = '', value = '', in: keyIn = 'header' } = cred.data;
-          if (name && value) {
-            if (keyIn === 'query') {
-              const parsedUrl = new URL(url);
-              parsedUrl.searchParams.append(name, value);
-              requestUrl = parsedUrl.toString();
-            } else {
-              headerObj[name] = value;
-            }
-          }
-        }
-      } else {
-        console.warn(`[Node: httpRequest] Credential not found or failed to load: ${credentialId}`);
-      }
+      const auth = await resolveCredentialAuth(credentialId);
+      Object.assign(headerObj, auth.headers);
+      requestUrl = appendQueryParams(requestUrl, auth.query);
     }
 
     const fetchOptions: RequestInit = {
@@ -738,31 +756,13 @@ const mcpToolCallNode: LibreFlowNodeDefinition = {
       Object.assign(argsObj, argsList);
     }
 
-    // Resolve auth from the encrypted credentials vault (same scheme as httpRequest):
-    // basicAuth -> Authorization: Basic; apiKey -> custom header or query parameter.
+    // Resolve auth from the encrypted credentials vault (shared helper).
     let requestUrl = serverUrl;
-    const headers: Record<string, string> = {};
+    let headers: Record<string, string> = {};
     if (authentication === 'genericCredential' && credentialId) {
-      const cred = await getCredentialById(credentialId);
-      if (cred && cred.data) {
-        if (cred.type === 'basicAuth') {
-          const { user = '', password = '' } = cred.data;
-          headers['Authorization'] = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
-        } else if (cred.type === 'apiKey') {
-          const { name = '', value = '', in: keyIn = 'header' } = cred.data;
-          if (name && value) {
-            if (keyIn === 'query') {
-              const parsedUrl = new URL(serverUrl);
-              parsedUrl.searchParams.append(name, value);
-              requestUrl = parsedUrl.toString();
-            } else {
-              headers[name] = value;
-            }
-          }
-        }
-      } else {
-        console.warn(`[Node: mcpToolCall] Credential not found or failed to load: ${credentialId}`);
-      }
+      const auth = await resolveCredentialAuth(credentialId);
+      headers = auth.headers;
+      requestUrl = appendQueryParams(serverUrl, auth.query);
     }
 
     return await executeMcpToolCall(requestUrl, toolName, argsObj, headers);
@@ -1132,19 +1132,13 @@ const aiAgentNode: LibreFlowNodeDefinition = {
     // SSRF guard on the LLM endpoint (private IPs blocked in production, allowed in dev).
     await assertSafeUrl(endpoint);
 
-    // LLM auth from the encrypted credentials vault (same scheme as httpRequest).
+    // LLM auth from the encrypted credentials vault (shared helper).
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    let llmEndpoint = endpoint;
     if (authentication === 'genericCredential' && credentialId) {
-      const cred = await getCredentialById(credentialId);
-      if (cred && cred.data) {
-        if (cred.type === 'apiKey') {
-          const { name = '', value = '' } = cred.data;
-          if (name && value) headers[name] = value;
-        } else if (cred.type === 'basicAuth') {
-          const { user = '', password = '' } = cred.data;
-          headers['Authorization'] = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
-        }
-      }
+      const auth = await resolveCredentialAuth(credentialId);
+      Object.assign(headers, auth.headers);
+      llmEndpoint = appendQueryParams(endpoint, auth.query);
     }
 
     const toOpenAI = (tools: any[]) => tools.map((t: any) => ({
@@ -1158,26 +1152,21 @@ const aiAgentNode: LibreFlowNodeDefinition = {
     // `callTool(name, args)` abstracts the dispatch for the loop below.
     let openaiTools: any[] = [];
     let callTool: ((name: string, args: any) => Promise<string>) | null = null;
+    let mcpSession: { close: () => void } | null = null;
 
     if (mcpServerUrl) {
-      // Build MCP-server auth headers from the vault (same scheme as httpRequest/mcpToolCall).
-      const mcpHeaders: Record<string, string> = {};
-      if (mcpAuthentication === 'genericCredential' && mcpCredentialId) {
-        const cred = await getCredentialById(mcpCredentialId);
-        if (cred && cred.data) {
-          if (cred.type === 'apiKey') {
-            const { name = '', value = '' } = cred.data;
-            if (name && value) mcpHeaders[name] = value;
-          } else if (cred.type === 'basicAuth') {
-            const { user = '', password = '' } = cred.data;
-            mcpHeaders['Authorization'] = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
-          }
-        }
-      }
-      const { fetchToolsFromMcpServer, executeMcpToolCall } = await import('./mcp.js');
-      openaiTools = toOpenAI(await fetchToolsFromMcpServer(mcpServerUrl, mcpHeaders));
+      // External MCP: auth from the vault, ONE persistent client session reused across the
+      // loop (avoids a connect+initialize handshake per tool call).
+      const mcpAuth = (mcpAuthentication === 'genericCredential' && mcpCredentialId)
+        ? await resolveCredentialAuth(mcpCredentialId)
+        : { headers: {}, query: {} };
+      const url = appendQueryParams(mcpServerUrl, mcpAuth.query);
+      const { openMcpClientSession } = await import('./mcp.js');
+      const session = await openMcpClientSession(url, mcpAuth.headers);
+      mcpSession = session;
+      openaiTools = toOpenAI(await session.listTools());
       callTool = async (name, args) => {
-        const result = await executeMcpToolCall(mcpServerUrl, name, args, mcpHeaders);
+        const result: any = await session.callTool(name, args);
         return result?.content?.[0]?.text ?? JSON.stringify(result ?? {});
       };
     } else if (mcpServerId) {
@@ -1206,8 +1195,9 @@ const aiAgentNode: LibreFlowNodeDefinition = {
     let answer = '';
     let hitCap = true;
 
-    const chatUrl = `${endpoint.replace(/\/$/, '')}/chat/completions`;
+    const chatUrl = `${llmEndpoint.replace(/\/$/, '')}/chat/completions`;
 
+    try {
     for (let i = 0; i < maxIter; i++) {
       const body: any = { model, messages, temperature: isNaN(temp) ? 0 : temp, stream: false };
       if (openaiTools.length) { body.tools = openaiTools; body.tool_choice = 'auto'; }
@@ -1252,6 +1242,9 @@ const aiAgentNode: LibreFlowNodeDefinition = {
         trace.push({ tool: tc.function.name, arguments: args, result: resultText.slice(0, 2000) });
         messages.push({ role: 'tool', tool_call_id: tc.id, content: String(resultText).slice(0, 4000) });
       }
+    }
+    } finally {
+      mcpSession?.close();
     }
 
     return { answer, iterations: trace.length, hitMaxIterations: hitCap && trace.length > 0, toolCalls: trace };

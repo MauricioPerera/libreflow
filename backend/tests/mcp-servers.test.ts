@@ -43,6 +43,7 @@ vi.mock('../src/db.js', () => {
   return {
     getActiveWorkflows: async () => [flowA, flowB],
     getWorkflowById: async (id: string) => byId[id] || null,
+    getWorkflowsByIds: async (ids: string[]) => ids.map((id) => byId[id]).filter(Boolean),
     getWorkflows: async () => [flowA, flowB],
     getAllExecutions: async () => [],
     getExecutionById: async () => null,

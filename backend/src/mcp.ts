@@ -10,6 +10,7 @@ import {
   saveDataTable,
   getDataTableRows,
   addDataTableRow,
+  getWorkflowsByIds,
   getMcpServerById,
   deleteWorkflow,
   setWorkflowActiveState,
@@ -622,12 +623,7 @@ async function resolveScopedWorkflows(scope: McpScope): Promise<any[]> {
   if (scope.workflowIds === null) {
     return await getActiveWorkflows();
   }
-  const out: any[] = [];
-  for (const wid of scope.workflowIds) {
-    const wf = await getWorkflowById(wid);
-    if (wf) out.push(wf);
-  }
-  return out;
+  return await getWorkflowsByIds(scope.workflowIds);
 }
 
 /**
@@ -1233,6 +1229,20 @@ async function connectMcpClient(serverUrl: string, headers?: Record<string, stri
     await client.connect(new SSEClientTransport(url, opts));
     return client;
   }
+}
+
+/**
+ * Opens a single connected MCP client session and returns list/call/close handles.
+ * Use this when making MULTIPLE calls to the same server (e.g. an agent loop) to avoid
+ * reconnecting (connect + initialize handshake) on every tool call.
+ */
+export async function openMcpClientSession(serverUrl: string, headers?: Record<string, string>) {
+  const client = await connectMcpClient(serverUrl, headers);
+  return {
+    listTools: async () => (await client.listTools()).tools || [],
+    callTool: async (name: string, args: Record<string, any>) => client.callTool({ name, arguments: args }),
+    close: () => client.close().catch(() => {}),
+  };
 }
 
 export async function fetchToolsFromMcpServer(serverUrl: string, headers?: Record<string, string>): Promise<any[]> {

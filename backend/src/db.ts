@@ -174,6 +174,20 @@ export async function getWorkflowById(id: string) {
   return workflow;
 }
 
+/** Fetches multiple workflows by id in one query, preserving the requested order. */
+export async function getWorkflowsByIds(ids: string[]) {
+  if (!ids || ids.length === 0) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  const list = await db.all(`SELECT * FROM workflows WHERE id IN (${placeholders})`, ids);
+  const byId: Record<string, any> = {};
+  for (const w of list) {
+    w.nodes = JSON.parse(w.nodes);
+    w.connections = JSON.parse(w.connections);
+    byId[w.id] = w;
+  }
+  return ids.map(id => byId[id]).filter(Boolean);
+}
+
 export async function saveWorkflow(id: string, name: string, nodes: any, connections: any, onErrorWorkflowId?: string, description?: string | null) {
   const nodesStr = JSON.stringify(nodes);
   const connectionsStr = JSON.stringify(connections);

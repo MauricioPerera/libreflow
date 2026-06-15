@@ -39,6 +39,7 @@ vi.mock('../src/db.js', () => {
       }
       return null;
     },
+    getWorkflowsByIds: async () => [],
     getDataTables: async () => [
       { id: 'table-1', name: 'Leads', columns: [{ name: 'email', type: 'string' }] }
     ],

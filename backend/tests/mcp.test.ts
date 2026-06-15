@@ -65,6 +65,7 @@ vi.mock('../src/db.js', () => {
     getActiveWorkflows: async () => [mockWorkflow],
     getWorkflows: async () => [mockWorkflow],
     getWorkflowById: async (id: string) => id === 'flow-1' ? mockWorkflow : null,
+    getWorkflowsByIds: async (ids: string[]) => ids.map((id) => (id === 'flow-1' ? mockWorkflow : null)).filter(Boolean),
     saveWorkflow: async (id: string, name: string, nodes: any[], connections: any[], onErrorId?: string) => {},
     getAllExecutions: async () => [
       { id: 'exec-1', workflowId: 'flow-1', success: true, durationMs: 150, startTime: '2026-06-14T00:00:00Z', endTime: '2026-06-14T00:00:00Z' }
