@@ -24,6 +24,9 @@ import { triggerManager } from './triggerManager.js';
 import { Server as McpSdkServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { Client as McpSdkClient } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 
 const router = Router();
 export const activeConnections = new Map<string, Response>();
@@ -1007,159 +1010,44 @@ router.get('/client/tools', async (req, res) => {
   }
 });
 
-export async function fetchToolsFromMcpServer(serverUrl: string): Promise<any[]> {
+/**
+ * Connects to an external MCP server using the official SDK. Tries the current
+ * Streamable HTTP transport first and falls back to the legacy SSE transport, so the
+ * `mcpToolCall` node can consume any standard MCP server. SSRF-guarded before connecting.
+ */
+async function connectMcpClient(serverUrl: string): Promise<McpSdkClient> {
   await assertSafeUrl(serverUrl); // SSRF guard
-  const response = await fetch(serverUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to connect to MCP server: ${response.statusText}`);
+  const url = new URL(serverUrl);
+
+  try {
+    const client = new McpSdkClient({ name: 'LibreFlow-Client', version: '1.0.0' }, { capabilities: {} });
+    await client.connect(new StreamableHTTPClientTransport(url));
+    return client;
+  } catch {
+    // Older servers only speak the deprecated HTTP+SSE transport — retry with a fresh client.
+    const client = new McpSdkClient({ name: 'LibreFlow-Client', version: '1.0.0' }, { capabilities: {} });
+    await client.connect(new SSEClientTransport(url));
+    return client;
   }
-  
-  const body = response.body;
-  if (!body) {
-    throw new Error('No response body from MCP server');
+}
+
+export async function fetchToolsFromMcpServer(serverUrl: string): Promise<any[]> {
+  const client = await connectMcpClient(serverUrl);
+  try {
+    const res = await client.listTools();
+    return res.tools || [];
+  } finally {
+    await client.close().catch(() => {});
   }
-
-  let endpointUrl = '';
-  const decoder = new TextDecoder();
-  let buffer = '';
-  for await (const chunk of body as any) {
-    buffer += decoder.decode(chunk, { stream: true });
-    const match = buffer.match(/event:\s*endpoint\r?\ndata:\s*([^\r\n]+)/);
-    if (match) {
-      endpointUrl = match[1].trim();
-      break;
-    }
-  }
-
-  if (!endpointUrl) {
-    throw new Error('Could not find endpoint event from MCP server');
-  }
-
-  const resolvedUrl = new URL(endpointUrl, serverUrl).toString();
-
-  // Send initialize request
-  const initId = 1;
-  const initRes = await fetch(resolvedUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: initId,
-      method: 'initialize',
-      params: {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'LibreFlow-Client', version: '1.0.0' }
-      }
-    })
-  });
-
-  if (!initRes.ok) {
-    throw new Error(`Failed to initialize MCP session: ${initRes.statusText}`);
-  }
-
-  // Send tools/list request
-  const listId = 2;
-  const listRes = await fetch(resolvedUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: listId,
-      method: 'tools/list',
-      params: {}
-    })
-  });
-
-  if (!listRes.ok) {
-    throw new Error(`Failed to list tools: ${listRes.statusText}`);
-  }
-
-  const listData = await listRes.json();
-  if (listData.error) {
-    throw new Error(`MCP Server Error: ${listData.error.message}`);
-  }
-
-  return listData.result?.tools || [];
 }
 
 export async function executeMcpToolCall(serverUrl: string, toolName: string, toolArguments: Record<string, any>): Promise<any> {
-  await assertSafeUrl(serverUrl); // SSRF guard
-  const response = await fetch(serverUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to connect to MCP server: ${response.statusText}`);
+  const client = await connectMcpClient(serverUrl);
+  try {
+    return await client.callTool({ name: toolName, arguments: toolArguments });
+  } finally {
+    await client.close().catch(() => {});
   }
-
-  const body = response.body;
-  if (!body) {
-    throw new Error('No response body from MCP server');
-  }
-
-  let endpointUrl = '';
-  const decoder = new TextDecoder();
-  let buffer = '';
-  for await (const chunk of body as any) {
-    buffer += decoder.decode(chunk, { stream: true });
-    const match = buffer.match(/event:\s*endpoint\r?\ndata:\s*([^\r\n]+)/);
-    if (match) {
-      endpointUrl = match[1].trim();
-      break;
-    }
-  }
-
-  if (!endpointUrl) {
-    throw new Error('Could not find endpoint event from MCP server');
-  }
-
-  const resolvedUrl = new URL(endpointUrl, serverUrl).toString();
-
-  // Send initialize request
-  const initId = 1;
-  const initRes = await fetch(resolvedUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: initId,
-      method: 'initialize',
-      params: {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'LibreFlow-Client', version: '1.0.0' }
-      }
-    })
-  });
-
-  if (!initRes.ok) {
-    throw new Error(`Failed to initialize MCP session: ${initRes.statusText}`);
-  }
-
-  // Send tools/call request
-  const callId = 2;
-  const callRes = await fetch(resolvedUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: callId,
-      method: 'tools/call',
-      params: {
-        name: toolName,
-        arguments: toolArguments
-      }
-    })
-  });
-
-  if (!callRes.ok) {
-    throw new Error(`Failed to call tool: ${callRes.statusText}`);
-  }
-
-  const callData = await callRes.json();
-  if (callData.error) {
-    throw new Error(`MCP Tool Error: ${callData.error.message}`);
-  }
-
-  return callData.result;
 }
 
 export function sanitizeMcpName(name: string): string {

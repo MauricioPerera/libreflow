@@ -657,10 +657,11 @@ const mcpToolCallNode: LibreFlowNodeDefinition = {
   parameters: [
     {
       name: 'serverUrl',
-      label: 'URL del Servidor MCP (SSE)',
+      label: 'URL del Servidor MCP',
       type: 'string',
-      default: 'http://localhost:3011/sse',
-      placeholder: 'http://localhost:3011/sse'
+      default: 'http://localhost:3000/mcp/<id>',
+      placeholder: 'Streamable HTTP (recomendado) o SSE',
+      description: 'Acepta servidores MCP estándar: Streamable HTTP (transporte actual) o SSE (legacy).'
     },
     {
       name: 'toolName',
