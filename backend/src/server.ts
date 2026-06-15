@@ -27,13 +27,18 @@ import {
   getDataTableRows,
   addDataTableRow,
   updateDataTableRow,
-  deleteDataTableRow
+  deleteDataTableRow,
+  getMcpServers,
+  getMcpServerById,
+  saveMcpServer,
+  deleteMcpServer
 } from './db.js';
 import { triggerManager } from './triggerManager.js';
 import { NodeRegistry } from './registry.js';
-import mcpRouter from './mcp.js';
+import mcpRouter, { publicMcpRouter } from './mcp.js';
 import { requireAuth, verifyWebhookSignature } from './auth.js';
 import { rateLimit } from './security.js';
+import crypto from 'crypto';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -69,6 +74,10 @@ app.use(
 // All /api routes (including MCP) require authentication. Webhooks use HMAC instead.
 app.use('/api', requireAuth);
 app.use('/api/mcp', mcpRouter);
+
+// Named MCP servers are reachable at their own public URL (/mcp/:id/...), outside
+// the /api auth layer — each enforces its own per-server bearer token instead.
+app.use('/mcp', publicMcpRouter);
 
 const engine = new WorkflowEngine();
 
@@ -439,6 +448,61 @@ app.put('/api/data-tables/:id/rows/:rowId', async (req, res) => {
 app.delete('/api/data-tables/:id/rows/:rowId', async (req, res) => {
   try {
     await deleteDataTableRow(req.params.rowId);
+    return res.json({ success: true });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+// MCP SERVERS CRUD — named servers exposing a curated group of workflows as MCP tools.
+function generateMcpToken(): string {
+  return crypto.randomBytes(24).toString('hex');
+}
+
+app.get('/api/mcp-servers', async (req, res) => {
+  try {
+    return res.json(await getMcpServers());
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+app.get('/api/mcp-servers/:id', async (req, res) => {
+  try {
+    const server = await getMcpServerById(req.params.id);
+    if (!server) return res.status(404).json({ error: 'MCP server not found' });
+    return res.json(server);
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+app.post('/api/mcp-servers', async (req, res) => {
+  try {
+    const { id, name, workflowIds = [], requireAuth: ra = true, exposeSystemTools = false, regenerateToken = false } = req.body;
+    if (!name || typeof name !== 'string') {
+      return res.status(400).json({ error: 'name is required' });
+    }
+    if (!Array.isArray(workflowIds)) {
+      return res.status(400).json({ error: 'workflowIds must be an array' });
+    }
+
+    const existing = id ? await getMcpServerById(id) : null;
+    const serverId = existing ? existing.id : `mcps-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    // A token is always generated and kept so auth can be toggled on later without losing it.
+    let token: string | null = existing ? existing.token : generateMcpToken();
+    if (regenerateToken || !token) token = generateMcpToken();
+
+    await saveMcpServer(serverId, name, workflowIds, token, !!ra, !!exposeSystemTools);
+    return res.json(await getMcpServerById(serverId));
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+app.delete('/api/mcp-servers/:id', async (req, res) => {
+  try {
+    await deleteMcpServer(req.params.id);
     return res.json({ success: true });
   } catch (err: any) {
     return serverError(res, err);

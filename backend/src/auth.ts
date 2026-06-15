@@ -19,6 +19,11 @@ function safeEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ab, bb);
 }
 
+/** Constant-time string comparison, exported for per-resource token checks (e.g. MCP servers). */
+export function constantTimeEqual(a: string, b: string): boolean {
+  return safeEqual(a, b);
+}
+
 /**
  * Express middleware enforcing an API key on protected routes.
  * Accepts the key via `x-api-key` header or `Authorization: Bearer <key>`.

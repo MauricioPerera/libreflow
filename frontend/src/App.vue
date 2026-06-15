@@ -25,11 +25,17 @@
         >
           🔑 Credenciales
         </button>
-        <button 
-          @click="activeSubView = 'datatables'; fetchDataTables()" 
+        <button
+          @click="activeSubView = 'datatables'; fetchDataTables()"
           :class="['menu-btn', { active: activeSubView === 'datatables' }]"
         >
           📊 Tablas de Datos
+        </button>
+        <button
+          @click="activeSubView = 'mcpservers'; fetchMcpServers(); fetchSavedWorkflows()"
+          :class="['menu-btn', { active: activeSubView === 'mcpservers' }]"
+        >
+          🔌 Servidores MCP
         </button>
       </nav>
     </aside>
@@ -341,6 +347,71 @@
               </tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      <!-- MCP SERVERS SUBVIEW -->
+      <div v-if="activeSubView === 'mcpservers'" class="subview-container">
+        <div class="subview-header">
+          <div>
+            <h2 class="subview-title">Servidores MCP</h2>
+            <p class="subview-desc">Publica un grupo concreto de flujos como herramientas MCP en una URL propia, conectable desde clientes como Claude Desktop.</p>
+          </div>
+          <button @click="openCreateMcpServerModal" class="btn btn-primary">
+            + Crear Servidor MCP
+          </button>
+        </div>
+
+        <div class="table-container">
+          <table class="dashboard-table">
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>URL (MCP)</th>
+                <th>Flujos</th>
+                <th>Acceso</th>
+                <th style="text-align: right;">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="server in mcpServersList" :key="server.id">
+                <td class="flow-name-cell" @click="openEditMcpServerModal(server)">
+                  🔌 {{ server.name }}
+                </td>
+                <td class="code-font" style="font-size: 12px;">
+                  {{ mcpServerUrl(server.id) }}
+                  <button @click="copyMcpText(mcpServerUrl(server.id))" class="btn btn-secondary" style="padding: 2px 6px; font-size: 11px; margin-left: 6px;">Copiar</button>
+                </td>
+                <td>{{ (server.workflow_ids || []).length }}</td>
+                <td>
+                  <span :class="['status-badge', server.require_auth ? 'success' : 'inactive']">
+                    {{ server.require_auth ? 'Token' : 'Público' }}
+                  </span>
+                </td>
+                <td style="text-align: right;">
+                  <div class="table-actions">
+                    <button v-if="server.require_auth" @click="copyMcpText(server.token)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">
+                      Copiar token
+                    </button>
+                    <button @click="openEditMcpServerModal(server)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">
+                      Editar
+                    </button>
+                    <button @click="deleteMcpServerFromDb(server.id)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px; border-color: hsla(var(--color-danger) / 0.3); color: hsl(var(--color-danger));">
+                      Eliminar
+                    </button>
+                  </div>
+                </td>
+              </tr>
+              <tr v-if="!dashboardLoaded">
+                <td colspan="5" class="empty-table-message">Cargando servidores…</td>
+              </tr>
+              <tr v-else-if="mcpServersList.length === 0">
+                <td colspan="5" class="empty-table-message">
+                  No tienes servidores MCP. Haz clic en "+ Crear Servidor MCP" para empezar.
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </main>
@@ -855,6 +926,52 @@
         </div>
       </div>
     </div>
+
+    <!-- Create/Edit MCP Server Modal -->
+    <div v-if="showMcpServerModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
+      <div class="modal-content" style="width: 560px; max-width: 95%;">
+        <h3 class="modal-title">{{ editingMcpServerId ? 'Editar Servidor MCP' : 'Crear Servidor MCP' }}</h3>
+        <p class="modal-desc">Selecciona los flujos que se expondrán como herramientas. El servidor tendrá su propia URL pública.</p>
+
+        <div class="form-group" style="margin-top: 12px;">
+          <label class="config-label">Nombre del Servidor</label>
+          <input v-model="mcpServerName" placeholder="ej: Herramientas de Ventas" class="config-input" />
+        </div>
+
+        <div class="form-group" style="margin-top: 16px;">
+          <label class="config-label">Flujos expuestos como tools</label>
+          <div style="max-height: 220px; overflow-y: auto; margin-top: 8px; border: 1px solid hsla(var(--text-muted) / 0.2); border-radius: 8px; padding: 8px;">
+            <label v-for="flow in savedWorkflowsList" :key="flow.id" style="display: flex; align-items: center; gap: 8px; padding: 6px 4px; cursor: pointer; font-size: 13px;">
+              <input type="checkbox" :checked="mcpServerWorkflowIds.includes(flow.id)" @change="toggleMcpWorkflow(flow.id)" style="width: 15px; height: 15px;" />
+              <span>{{ flow.name }}</span>
+            </label>
+            <div v-if="savedWorkflowsList.length === 0" style="font-size: 12px; color: hsl(var(--text-muted)); text-align: center; padding: 12px;">
+              No hay flujos guardados todavía.
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group" style="margin-top: 16px; display: flex; align-items: center; gap: 8px;">
+          <input id="mcp-require-auth" v-model="mcpServerRequireAuth" type="checkbox" style="width: 15px; height: 15px;" />
+          <label for="mcp-require-auth" style="font-size: 13px; cursor: pointer;">Requerir token (Bearer) para conectarse</label>
+        </div>
+        <div class="form-group" style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
+          <input id="mcp-system-tools" v-model="mcpServerExposeSystem" type="checkbox" style="width: 15px; height: 15px;" />
+          <label for="mcp-system-tools" style="font-size: 13px; cursor: pointer;">Exponer también las herramientas de sistema (libreflow_*)</label>
+        </div>
+
+        <div class="modal-actions" style="margin-top: 24px;">
+          <button @click="showMcpServerModal = false" class="btn btn-secondary">Cancelar</button>
+          <button
+            @click="saveMcpServerToDb"
+            class="btn btn-primary"
+            :disabled="!mcpServerName.trim() || mcpServerWorkflowIds.length === 0"
+          >
+            Guardar
+          </button>
+        </div>
+      </div>
+    </div>
 </template>
 
 <script setup lang="ts">
@@ -868,7 +985,16 @@ import CustomNode from './components/CustomNode.vue';
 
 // Screen Routing states
 const currentView = ref<'dashboard' | 'editor'>('dashboard');
-const activeSubView = ref<'workflows' | 'executions' | 'credentials' | 'datatables'>('workflows');
+const activeSubView = ref<'workflows' | 'executions' | 'credentials' | 'datatables' | 'mcpservers'>('workflows');
+
+// MCP servers state
+const mcpServersList = ref<any[]>([]);
+const showMcpServerModal = ref(false);
+const editingMcpServerId = ref<string | null>(null);
+const mcpServerName = ref('');
+const mcpServerWorkflowIds = ref<string[]>([]);
+const mcpServerRequireAuth = ref(true);
+const mcpServerExposeSystem = ref(false);
 
 // Data Tables state
 const dataTablesList = ref<any[]>([]);
@@ -941,6 +1067,7 @@ const closeAllModals = () => {
   showDataTableModal.value = false;
   showRowModal.value = false;
   showExpressionModal.value = false;
+  showMcpServerModal.value = false;
   expressionTarget.value = null;
 };
 
@@ -1625,6 +1752,85 @@ const fetchDataTables = async () => {
   }
 };
 
+// MCP SERVERS CRUD LOGIC
+const fetchMcpServers = async () => {
+  try {
+    const res = await fetch('/api/mcp-servers');
+    if (res.ok) mcpServersList.value = await res.json();
+  } catch (err) {
+    console.error('Error fetching MCP servers:', err);
+  }
+};
+
+const mcpServerUrl = (id: string) => `${window.location.origin}/mcp/${id}`;
+
+const copyMcpText = async (text: string) => {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // Clipboard may be unavailable (insecure context); ignore silently.
+  }
+};
+
+const openCreateMcpServerModal = () => {
+  editingMcpServerId.value = null;
+  mcpServerName.value = '';
+  mcpServerWorkflowIds.value = [];
+  mcpServerRequireAuth.value = true;
+  mcpServerExposeSystem.value = false;
+  showMcpServerModal.value = true;
+};
+
+const openEditMcpServerModal = (server: any) => {
+  editingMcpServerId.value = server.id;
+  mcpServerName.value = server.name;
+  mcpServerWorkflowIds.value = [...(server.workflow_ids || [])];
+  mcpServerRequireAuth.value = !!server.require_auth;
+  mcpServerExposeSystem.value = !!server.expose_system_tools;
+  showMcpServerModal.value = true;
+};
+
+const toggleMcpWorkflow = (id: string) => {
+  const i = mcpServerWorkflowIds.value.indexOf(id);
+  if (i === -1) mcpServerWorkflowIds.value.push(id);
+  else mcpServerWorkflowIds.value.splice(i, 1);
+};
+
+const saveMcpServerToDb = async () => {
+  try {
+    const res = await fetch('/api/mcp-servers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: editingMcpServerId.value || undefined,
+        name: mcpServerName.value.trim(),
+        workflowIds: mcpServerWorkflowIds.value,
+        requireAuth: mcpServerRequireAuth.value,
+        exposeSystemTools: mcpServerExposeSystem.value,
+      }),
+    });
+    if (res.ok) {
+      showMcpServerModal.value = false;
+      await fetchMcpServers();
+    } else {
+      const detail = await res.json().catch(() => ({}));
+      alert('Error al guardar el servidor MCP: ' + (detail.error || res.status));
+    }
+  } catch (err) {
+    console.error('Error saving MCP server:', err);
+  }
+};
+
+const deleteMcpServerFromDb = async (id: string) => {
+  if (!confirm('¿Eliminar este servidor MCP de forma permanente?')) return;
+  try {
+    const res = await fetch(`/api/mcp-servers/${id}`, { method: 'DELETE' });
+    if (res.ok) await fetchMcpServers();
+  } catch (err) {
+    console.error('Error deleting MCP server:', err);
+  }
+};
+
 const parseJsonColumns = (cols: any) => {
   if (typeof cols === 'string') {
     try {
@@ -1819,6 +2025,7 @@ onMounted(async () => {
   await fetchGlobalExecutions();
   await fetchCredentials();
   await fetchDataTables();
+  await fetchMcpServers();
   dashboardLoaded.value = true;
 
   // Warn before leaving/reloading the tab with unsaved canvas changes.

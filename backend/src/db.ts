@@ -94,6 +94,21 @@ export async function initDatabase() {
     );
   `);
 
+  // Create mcp_servers table: named MCP servers that expose a curated group of
+  // workflows as tools, each reachable at its own public URL (/mcp/:id/...).
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS mcp_servers (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      workflow_ids TEXT NOT NULL,
+      token TEXT,
+      require_auth INTEGER DEFAULT 1,
+      expose_system_tools INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
   // Indexes for the hot filter/sort columns (avoid full table scans as data grows).
   await db.exec('CREATE INDEX IF NOT EXISTS idx_executions_wf ON executions(workflow_id, executed_at)');
   await db.exec('CREATE INDEX IF NOT EXISTS idx_versions_wf ON workflow_versions(workflow_id, version)');
@@ -121,7 +136,7 @@ export async function getWorkflows() {
 }
 
 export async function getActiveWorkflows() {
-  const list = await db.all('SELECT * FROM workflows WHERE active = 1');
+  const list = await db.all('SELECT * FROM workflows WHERE active = 1 ORDER BY id ASC');
   return list.map(workflow => {
     workflow.nodes = JSON.parse(workflow.nodes);
     workflow.connections = JSON.parse(workflow.connections);
@@ -410,4 +425,62 @@ export async function updateDataTableRow(rowId: string, data: Record<string, any
 
 export async function deleteDataTableRow(rowId: string) {
   await db.run('DELETE FROM data_table_rows WHERE id = ?', [rowId]);
+}
+
+// --- MCP SERVERS CRUD METHODS ---
+
+/** Normalizes a raw DB row: parses workflow_ids JSON and coerces flags to booleans. */
+function hydrateMcpServer(s: any) {
+  if (!s) return s;
+  let ids: string[] = [];
+  try {
+    ids = JSON.parse(s.workflow_ids || '[]');
+  } catch {
+    ids = [];
+  }
+  return {
+    ...s,
+    workflow_ids: Array.isArray(ids) ? ids : [],
+    require_auth: !!s.require_auth,
+    expose_system_tools: !!s.expose_system_tools,
+  };
+}
+
+export async function getMcpServers() {
+  const list = await db.all('SELECT * FROM mcp_servers ORDER BY updated_at DESC');
+  return list.map(hydrateMcpServer);
+}
+
+export async function getMcpServerById(id: string) {
+  const s = await db.get('SELECT * FROM mcp_servers WHERE id = ?', [id]);
+  return hydrateMcpServer(s);
+}
+
+export async function saveMcpServer(
+  id: string,
+  name: string,
+  workflowIds: string[],
+  token: string | null,
+  requireAuth: boolean,
+  exposeSystemTools: boolean
+) {
+  const idsStr = JSON.stringify(Array.isArray(workflowIds) ? workflowIds : []);
+  const ra = requireAuth ? 1 : 0;
+  const est = exposeSystemTools ? 1 : 0;
+  const existing = await db.get('SELECT id FROM mcp_servers WHERE id = ?', [id]);
+  if (existing) {
+    await db.run(
+      'UPDATE mcp_servers SET name = ?, workflow_ids = ?, token = ?, require_auth = ?, expose_system_tools = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [name, idsStr, token, ra, est, id]
+    );
+  } else {
+    await db.run(
+      'INSERT INTO mcp_servers (id, name, workflow_ids, token, require_auth, expose_system_tools) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, name, idsStr, token, ra, est]
+    );
+  }
+}
+
+export async function deleteMcpServer(id: string) {
+  await db.run('DELETE FROM mcp_servers WHERE id = ?', [id]);
 }
