@@ -1,0 +1,413 @@
+import sqlite3 from 'sqlite3';
+import { open, Database } from 'sqlite';
+import path from 'path';
+import { encrypt, decrypt } from './encryption.js';
+
+let db: Database<sqlite3.Database, sqlite3.Statement>;
+
+export async function initDatabase() {
+  const dbPath = path.resolve(process.cwd(), 'database.sqlite');
+  
+  db = await open({
+    filename: dbPath,
+    driver: sqlite3.Database
+  });
+
+  // Enforce foreign keys so ON DELETE CASCADE actually runs (off by default in SQLite).
+  await db.exec('PRAGMA foreign_keys = ON');
+
+  // Create workflows table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS workflows (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      nodes TEXT NOT NULL,
+      connections TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Idempotent column migrations: only swallow the "duplicate column" error, rethrow the rest.
+  await addColumnIfMissing('workflows', 'active', 'INTEGER DEFAULT 0');
+  await addColumnIfMissing('workflows', 'onErrorWorkflowId', 'TEXT');
+
+  // Create executions table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS executions (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      report TEXT NOT NULL,
+      executed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+    );
+  `);
+
+  // Create credentials table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS credentials (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      data TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Create workflow_versions table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS workflow_versions (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      nodes TEXT NOT NULL,
+      connections TEXT NOT NULL,
+      onErrorWorkflowId TEXT,
+      version INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+    );
+  `);
+
+  // Create data_tables table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS data_tables (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      columns TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Create data_table_rows table
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS data_table_rows (
+      id TEXT PRIMARY KEY,
+      table_id TEXT NOT NULL,
+      data TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (table_id) REFERENCES data_tables(id) ON DELETE CASCADE
+    );
+  `);
+
+  // Indexes for the hot filter/sort columns (avoid full table scans as data grows).
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_executions_wf ON executions(workflow_id, executed_at)');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_versions_wf ON workflow_versions(workflow_id, version)');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_rows_table ON data_table_rows(table_id)');
+
+  console.log(`[LibreFlow Database] SQLite initialized at: ${dbPath}`);
+}
+
+/**
+ * Adds a column only if it does not already exist, distinguishing the benign
+ * "duplicate column" case from real migration failures (which are rethrown).
+ */
+async function addColumnIfMissing(table: string, column: string, definition: string) {
+  try {
+    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  } catch (err: any) {
+    if (!/duplicate column name/i.test(err?.message || '')) {
+      throw err;
+    }
+  }
+}
+
+export async function getWorkflows() {
+  return db.all('SELECT id, name, active, onErrorWorkflowId, created_at, updated_at FROM workflows ORDER BY updated_at DESC');
+}
+
+export async function getActiveWorkflows() {
+  const list = await db.all('SELECT * FROM workflows WHERE active = 1');
+  return list.map(workflow => {
+    workflow.nodes = JSON.parse(workflow.nodes);
+    workflow.connections = JSON.parse(workflow.connections);
+    return workflow;
+  });
+}
+
+export async function setWorkflowActiveState(id: string, active: boolean) {
+  const activeVal = active ? 1 : 0;
+  await db.run('UPDATE workflows SET active = ? WHERE id = ?', [activeVal, id]);
+}
+
+export async function getWorkflowById(id: string) {
+  const workflow = await db.get('SELECT * FROM workflows WHERE id = ?', [id]);
+  if (workflow) {
+    workflow.nodes = JSON.parse(workflow.nodes);
+    workflow.connections = JSON.parse(workflow.connections);
+  }
+  return workflow;
+}
+
+export async function saveWorkflow(id: string, name: string, nodes: any, connections: any, onErrorWorkflowId?: string) {
+  const nodesStr = JSON.stringify(nodes);
+  const connectionsStr = JSON.stringify(connections);
+
+  // Persist the workflow and its version atomically — never leave one without the other.
+  await db.run('BEGIN');
+  try {
+    const existing = await db.get('SELECT id FROM workflows WHERE id = ?', [id]);
+    if (existing) {
+      await db.run(
+        'UPDATE workflows SET name = ?, nodes = ?, connections = ?, onErrorWorkflowId = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [name, nodesStr, connectionsStr, onErrorWorkflowId || null, id]
+      );
+    } else {
+      await db.run(
+        'INSERT INTO workflows (id, name, nodes, connections, onErrorWorkflowId, active) VALUES (?, ?, ?, ?, ?, 0)',
+        [id, name, nodesStr, connectionsStr, onErrorWorkflowId || null]
+      );
+    }
+
+    // Save workflow version automatically (same transaction)
+    await saveWorkflowVersion(id, name, nodes, connections, onErrorWorkflowId || null);
+    await db.run('COMMIT');
+  } catch (err) {
+    await db.run('ROLLBACK');
+    throw err;
+  }
+}
+
+export async function deleteWorkflow(id: string) {
+  await db.run('DELETE FROM workflows WHERE id = ?', [id]);
+}
+
+export async function saveExecution(id: string, workflowId: string, status: string, report: any) {
+  const reportStr = JSON.stringify(report);
+  // Upsert so an execution can be persisted as 'running' first and updated on completion.
+  await db.run(
+    'INSERT OR REPLACE INTO executions (id, workflow_id, status, report) VALUES (?, ?, ?, ?)',
+    [id, workflowId, status, reportStr]
+  );
+}
+
+/**
+ * Caps stored executions per workflow to bound unbounded growth. Keeps the most
+ * recent `keep` rows and deletes the rest.
+ */
+export async function pruneOldExecutions(workflowId: string, keep = 200) {
+  await db.run(
+    `DELETE FROM executions
+     WHERE workflow_id = ?
+       AND id NOT IN (
+         SELECT id FROM executions WHERE workflow_id = ? ORDER BY executed_at DESC LIMIT ?
+       )`,
+    [workflowId, workflowId, keep]
+  );
+}
+
+export async function getExecutions(workflowId: string) {
+  return db.all('SELECT id, status, executed_at FROM executions WHERE workflow_id = ? ORDER BY executed_at DESC LIMIT 50', [workflowId]);
+}
+
+export async function getAllExecutions() {
+  return db.all(`
+    SELECT e.id, e.status, e.executed_at, w.name as workflow_name, w.id as workflow_id
+    FROM executions e
+    JOIN workflows w ON e.workflow_id = w.id
+    ORDER BY e.executed_at DESC
+    LIMIT 100
+  `);
+}
+
+export async function getExecutionById(id: string) {
+  const execution = await db.get('SELECT * FROM executions WHERE id = ?', [id]);
+  if (execution) {
+    execution.report = JSON.parse(execution.report);
+  }
+  return execution;
+}
+
+export async function getCredentials() {
+  return db.all('SELECT id, name, type, created_at, updated_at FROM credentials ORDER BY updated_at DESC');
+}
+
+export async function getCredentialById(id: string) {
+  const credential = await db.get('SELECT * FROM credentials WHERE id = ?', [id]);
+  if (credential) {
+    try {
+      const decryptedStr = decrypt(credential.data);
+      credential.data = JSON.parse(decryptedStr);
+    } catch (err: any) {
+      console.error(`[Database] Error decrypting credential ${id}:`, err.message);
+      credential.data = {};
+    }
+  }
+  return credential;
+}
+
+export async function saveCredential(id: string, name: string, type: string, rawData: any) {
+  const dataStr = JSON.stringify(rawData);
+  const encryptedData = encrypt(dataStr);
+
+  const existing = await db.get('SELECT id FROM credentials WHERE id = ?', [id]);
+  if (existing) {
+    await db.run(
+      'UPDATE credentials SET name = ?, type = ?, data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [name, type, encryptedData, id]
+    );
+  } else {
+    await db.run(
+      'INSERT INTO credentials (id, name, type, data) VALUES (?, ?, ?, ?)',
+      [id, name, type, encryptedData]
+    );
+  }
+}
+
+export async function deleteCredential(id: string) {
+  await db.run('DELETE FROM credentials WHERE id = ?', [id]);
+}
+
+export async function saveWorkflowVersion(
+  workflowId: string,
+  name: string,
+  nodes: any,
+  connections: any,
+  onErrorWorkflowId?: string | null
+): Promise<boolean> {
+  const nodesStr = JSON.stringify(nodes);
+  const connectionsStr = JSON.stringify(connections);
+  const errId = onErrorWorkflowId || null;
+
+  // 1. Get the max version for this workflow
+  const row = await db.get('SELECT MAX(version) as maxVer FROM workflow_versions WHERE workflow_id = ?', [workflowId]);
+  const maxVer = row && row.maxVer ? Number(row.maxVer) : 0;
+
+  // 2. If a version exists, get its details to compare
+  if (maxVer > 0) {
+    const lastVersion = await db.get(
+      'SELECT name, nodes, connections, onErrorWorkflowId FROM workflow_versions WHERE workflow_id = ? AND version = ?',
+      [workflowId, maxVer]
+    );
+    if (lastVersion) {
+      // Compare if everything is exactly the same
+      if (
+        lastVersion.name === name &&
+        lastVersion.nodes === nodesStr &&
+        lastVersion.connections === connectionsStr &&
+        lastVersion.onErrorWorkflowId === errId
+      ) {
+        // No changes, skip creating a redundant version
+        return false;
+      }
+    }
+  }
+
+  // 3. Insert new version
+  const newVer = maxVer + 1;
+  const verId = `ver-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  await db.run(
+    'INSERT INTO workflow_versions (id, workflow_id, name, nodes, connections, onErrorWorkflowId, version) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [verId, workflowId, name, nodesStr, connectionsStr, errId, newVer]
+  );
+  return true;
+}
+
+export async function getWorkflowVersions(workflowId: string) {
+  return db.all(
+    'SELECT id, name, version, created_at FROM workflow_versions WHERE workflow_id = ? ORDER BY version DESC',
+    [workflowId]
+  );
+}
+
+export async function getWorkflowVersion(workflowId: string, version: number) {
+  const ver = await db.get(
+    'SELECT * FROM workflow_versions WHERE workflow_id = ? AND version = ?',
+    [workflowId, version]
+  );
+  if (ver) {
+    ver.nodes = JSON.parse(ver.nodes);
+    ver.connections = JSON.parse(ver.connections);
+  }
+  return ver;
+}
+
+export async function restoreWorkflowToVersion(workflowId: string, version: number) {
+  const ver = await getWorkflowVersion(workflowId, version);
+  if (!ver) {
+    throw new Error(`Version ${version} not found for workflow ${workflowId}`);
+  }
+  await saveWorkflow(workflowId, ver.name, ver.nodes, ver.connections, ver.onErrorWorkflowId);
+  return ver;
+}
+
+// --- DATA TABLES CRUD METHODS ---
+export async function getDataTables() {
+  return db.all('SELECT * FROM data_tables ORDER BY name ASC');
+}
+
+export async function getDataTableById(id: string) {
+  const table = await db.get('SELECT * FROM data_tables WHERE id = ?', [id]);
+  if (table) {
+    table.columns = JSON.parse(table.columns);
+  }
+  return table;
+}
+
+export async function getDataTableByName(name: string) {
+  const table = await db.get('SELECT * FROM data_tables WHERE name = ?', [name]);
+  if (table) {
+    table.columns = JSON.parse(table.columns);
+  }
+  return table;
+}
+
+export async function saveDataTable(id: string, name: string, columns: any[]) {
+  const colsStr = JSON.stringify(columns);
+  const existing = await db.get('SELECT id FROM data_tables WHERE id = ?', [id]);
+  if (existing) {
+    await db.run(
+      'UPDATE data_tables SET name = ?, columns = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [name, colsStr, id]
+    );
+  } else {
+    await db.run(
+      'INSERT INTO data_tables (id, name, columns) VALUES (?, ?, ?)',
+      [id, name, colsStr]
+    );
+  }
+}
+
+export async function deleteDataTable(id: string) {
+  await db.run('DELETE FROM data_tables WHERE id = ?', [id]);
+}
+
+export async function getDataTableRows(tableId: string, limit = 1000, offset = 0) {
+  const safeLimit = Math.min(5000, Math.max(1, Number(limit) || 1000));
+  const safeOffset = Math.max(0, Number(offset) || 0);
+  const rows = await db.all(
+    'SELECT * FROM data_table_rows WHERE table_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?',
+    [tableId, safeLimit, safeOffset]
+  );
+  return rows.map(r => ({
+    id: r.id,
+    table_id: r.table_id,
+    data: JSON.parse(r.data),
+    created_at: r.created_at,
+    updated_at: r.updated_at
+  }));
+}
+
+export async function addDataTableRow(tableId: string, rowId: string, data: Record<string, any>) {
+  const dataStr = JSON.stringify(data);
+  await db.run(
+    'INSERT INTO data_table_rows (id, table_id, data) VALUES (?, ?, ?)',
+    [rowId, tableId, dataStr]
+  );
+}
+
+export async function updateDataTableRow(rowId: string, data: Record<string, any>) {
+  const dataStr = JSON.stringify(data);
+  await db.run(
+    'UPDATE data_table_rows SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    [dataStr, rowId]
+  );
+}
+
+export async function deleteDataTableRow(rowId: string) {
+  await db.run('DELETE FROM data_table_rows WHERE id = ?', [rowId]);
+}
