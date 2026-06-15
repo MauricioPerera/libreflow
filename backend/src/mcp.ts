@@ -24,7 +24,13 @@ import {
 } from './db.js';
 
 // Default cap on rows/items returned to an agent — protects its context window.
-const AGENT_ROW_LIMIT = 50;
+const AGENT_ROW_LIMIT = 20;
+
+/** Trims a data-table row to what an agent needs: drops the redundant table_id and
+ *  the created_at/updated_at timestamps (kept in the DB; rarely needed by the agent). */
+function slimRow(row: any) {
+  return { id: row.id, data: row.data };
+}
 
 /**
  * Builds a data tool result with BOTH a compact text representation (works with any
@@ -462,19 +468,19 @@ const SYSTEM_TOOLS = [
           description: 'Optional sort: { "column": "score", "dir": "desc" }.',
           properties: { column: { type: 'string' }, dir: { type: 'string', enum: ['asc', 'desc'] } }
         },
-        limit: { type: 'number', description: 'Max rows to return (default 50, max 1000).' }
+        limit: { type: 'number', description: 'Max rows to return (default 20, max 1000).' }
       },
       required: ['tableId']
     }
   },
   {
     name: 'libreflow_get_data_table_rows',
-    description: 'Fetch rows from a data table (paginated). Returns { total, returned, offset, truncated, rows }.',
+    description: 'Fetch rows from a data table (paginated; rows trimmed to { id, data }). Returns { total, returned, offset, truncated, rows }.',
     inputSchema: {
       type: 'object',
       properties: {
         tableId: { type: 'string', description: 'The unique ID of the table.' },
-        limit: { type: 'number', description: 'Max rows to return (default 50, max 1000).' },
+        limit: { type: 'number', description: 'Max rows to return (default 20, max 1000).' },
         offset: { type: 'number', description: 'Rows to skip for pagination (default 0).' }
       },
       required: ['tableId']
@@ -851,7 +857,7 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
           }
           const effLimit = Math.min(1000, Math.max(1, Number(limit) || AGENT_ROW_LIMIT));
           const rows = await queryDataTableRows(tId, Array.isArray(filters) ? filters : [], { sort, limit: effLimit });
-          const out = { returned: rows.length, limit: effLimit, truncated: rows.length >= effLimit, rows };
+          const out = { returned: rows.length, limit: effLimit, truncated: rows.length >= effLimit, rows: rows.map(slimRow) };
           return dataResult(id, out);
         }
 
@@ -864,7 +870,7 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
           const offset = Math.max(0, Number(toolArguments.offset) || 0);
           const total = await countDataTableRows(tId);
           const rows = await getDataTableRows(tId, limit, offset);
-          const out = { total, returned: rows.length, offset, truncated: offset + rows.length < total, rows };
+          const out = { total, returned: rows.length, offset, truncated: offset + rows.length < total, rows: rows.map(slimRow) };
           return dataResult(id, out);
         }
 
@@ -926,7 +932,7 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
             }
             return true;
           });
-          return dataResult(id, filtered);
+          return dataResult(id, filtered.map(slimRow));
         }
 
         if (toolName === 'libreflow_update_data_table_row') {
