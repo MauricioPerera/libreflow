@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// LibreFlow driver — smoke-tests the backend execution engine over HTTP
-// and screenshots the running frontend with headless Chrome.
+// LibreFlow driver — smoke-tests the backend over HTTP and screenshots the frontend.
 //
 // Prereq: servers already running via `npm run dev` (backend :3000, frontend :5173).
 // Usage:
-//   node .claude/skills/run-libreflow/driver.mjs            # smoke + screenshot
-//   node .claude/skills/run-libreflow/driver.mjs --smoke    # API smoke only
+//   node .claude/skills/run-libreflow/driver.mjs            # engine smoke + mcp smoke + screenshot
+//   node .claude/skills/run-libreflow/driver.mjs --smoke    # engine API smoke only
+//   node .claude/skills/run-libreflow/driver.mjs --mcp      # MCP server + data-table state engine
 //   node .claude/skills/run-libreflow/driver.mjs --shot     # screenshot only
 //
 // Verified on Windows 11 (MINGW64), Node v24, Chrome stable.
@@ -20,7 +20,7 @@ const FRONTEND = process.env.LF_FRONTEND || 'http://localhost:5173';
 const SHOT_DIR = process.env.LF_SHOT_DIR || join(tmpdir(), 'lf-shots');
 
 const args = process.argv.slice(2);
-const only = args.find((a) => a === '--smoke' || a === '--shot');
+const only = args.find((a) => a === '--smoke' || a === '--mcp' || a === '--shot');
 
 function findChrome() {
   const candidates = [
@@ -34,8 +34,8 @@ function findChrome() {
   return hit;
 }
 
+// ---- Engine API smoke: trigger -> set -> log, resolving an expression ----
 async function smoke() {
-  // trigger -> set (defines a var) -> log (resolves it via expression)
   const workflow = {
     id: 'driver-smoke',
     name: 'Driver Smoke',
@@ -70,6 +70,92 @@ async function smoke() {
   console.log('[smoke] OK — engine ran and expression resolved');
 }
 
+// ---- MCP smoke: opens the legacy SSE transport (zero-dep) and drives the MCP server.
+// Exercises the GLOBAL server (system tools + data-table state engine: upsert idempotency
+// + atomic increment) and a NAMED server (a curated workflow group on its own URL). ----
+let _rpcId = 1;
+async function openSse(sseUrl) {
+  const res = await fetch(sseUrl);
+  if (!res.ok) throw new Error(`SSE ${sseUrl} -> HTTP ${res.status}`);
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '', url = null;
+  while (!url) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const m = buf.match(/event:\s*endpoint\r?\ndata:\s*([^\r\n]+)/);
+    if (m) url = new URL(m[1].trim(), sseUrl).toString();
+  }
+  if (!url) throw new Error(`no endpoint event from ${sseUrl}`);
+  // keep the stream alive so the session stays open
+  (async () => { try { while (true) { const { done } = await reader.read(); if (done) break; } } catch {} })();
+  return { url, cancel: () => reader.cancel().catch(() => {}) };
+}
+async function rpc(msgUrl, method, params) {
+  const r = await fetch(msgUrl, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: _rpcId++, method, params }),
+  });
+  const j = await r.json();
+  if (j.error) throw new Error(`${method}: ${j.error.message}`);
+  return j.result;
+}
+const callTool = async (msgUrl, name, args) => {
+  const r = await rpc(msgUrl, 'tools/call', { name, arguments: args });
+  return r.content[0].text;
+};
+
+async function mcpSmoke() {
+  // GLOBAL server: system tools present
+  const g = await openSse(`${BACKEND}/api/mcp/sse`);
+  await rpc(g.url, 'initialize', {});
+  const tools = (await rpc(g.url, 'tools/list', {})).tools;
+  if (!tools.some((t) => t.name === 'libreflow_list_workflows')) throw new Error('global server missing system tools');
+  console.log(`[mcp] global tools/list OK — ${tools.length} tools (system + active workflows)`);
+
+  // Data-table state engine: keyed table, upsert idempotency, atomic increment
+  const createTxt = await callTool(g.url, 'libreflow_create_data_table', {
+    name: `driver_${Date.now()}`, columns: [{ name: 'k', type: 'string' }, { name: 'n', type: 'number' }], keyColumn: 'k',
+  });
+  const tableId = createTxt.match(/ID: (table-[^\s]+)/)[1];
+  await callTool(g.url, 'libreflow_upsert_data_table_row', { tableId, data: { k: 'a', n: 1 } });
+  await callTool(g.url, 'libreflow_upsert_data_table_row', { tableId, data: { k: 'a', n: 9 } });
+  const inc = JSON.parse(await callTool(g.url, 'libreflow_increment_data_table_row', { tableId, key: 'a', field: 'n', amount: 1 }));
+  const page = JSON.parse(await callTool(g.url, 'libreflow_get_data_table_rows', { tableId }));
+  g.cancel();
+  if (page.total !== 1) throw new Error(`state engine: expected 1 row (idempotent upsert), got ${page.total}`);
+  if (inc.data.n !== 10) throw new Error(`increment: expected n=10, got ${inc.data.n}`);
+  console.log('[mcp] state engine OK — upsert idempotent (1 row), increment -> n=10');
+
+  // NAMED server: a curated workflow group exposed on its own URL, system tools off
+  await fetch(`${BACKEND}/api/workflows`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      id: 'driver-mcp-wf', name: 'Driver Echo',
+      nodes: [
+        { id: 'n1', type: 'trigger', name: 'Start', parameters: { triggerMode: 'manual', inputSchema: '{"type":"object","properties":{}}' } },
+        { id: 'n2', type: 'set', name: 'Out', parameters: { values: [{ key: 'echo', value: 'ok' }] } },
+      ],
+      connections: [{ source: 'n1', target: 'n2' }],
+    }),
+  });
+  const srv = await (await fetch(`${BACKEND}/api/mcp-servers`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'Driver Server', workflowIds: ['driver-mcp-wf'], requireAuth: false, exposeSystemTools: false }),
+  })).json();
+  const n = await openSse(`${BACKEND}/mcp/${srv.id}/sse`);
+  await rpc(n.url, 'initialize', {});
+  const nNames = (await rpc(n.url, 'tools/list', {})).tools.map((t) => t.name);
+  if (nNames.some((x) => x.startsWith('libreflow_'))) throw new Error('named server leaked system tools');
+  if (!nNames.includes('Driver_Echo')) throw new Error('named server missing its workflow tool');
+  const call = await callTool(n.url, 'Driver_Echo', {});
+  n.cancel();
+  if (!call.includes('"echo"')) throw new Error('named workflow tool did not run');
+  console.log(`[mcp] named server OK — ${srv.id} exposes only [Driver_Echo], executed via tools/call`);
+  console.log('[mcp] OK — MCP server (global + named) + data-table state engine');
+}
+
 function screenshot() {
   return new Promise((resolve, reject) => {
     mkdirSync(SHOT_DIR, { recursive: true });
@@ -98,8 +184,9 @@ function screenshot() {
 }
 
 try {
-  if (only !== '--shot') await smoke();
-  if (only !== '--smoke') await screenshot();
+  if (!only || only === '--smoke') await smoke();
+  if (!only || only === '--mcp') await mcpSmoke();
+  if (!only || only === '--shot') await screenshot();
   console.log('[driver] DONE');
 } catch (e) {
   console.error('[driver] FAILED:', e.message);
