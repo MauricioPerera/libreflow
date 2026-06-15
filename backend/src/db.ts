@@ -510,6 +510,71 @@ export async function getOrCreateDataTableRow(tableId: string, key: string, defa
   return { id: row.id, table_id: tableId, key: rowKey, data: JSON.parse(row.data), created: true };
 }
 
+const QUERY_OPS: Record<string, string> = {
+  eq: '=', ne: '!=', gt: '>', lt: '<', gte: '>=', lte: '<=',
+};
+
+/** Coerces a filter value so numeric/boolean comparisons against json_extract work. */
+function coerceQueryValue(v: any): any {
+  if (typeof v === 'string') {
+    if (v === 'true') return 1;
+    if (v === 'false') return 0;
+    if (v.trim() !== '' && !isNaN(Number(v))) return Number(v);
+  }
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  return v;
+}
+
+export interface QueryFilter { column: string; op?: string; value?: any }
+export interface QueryOptions { sort?: { column: string; dir?: 'asc' | 'desc' }; limit?: number; offset?: number }
+
+/**
+ * Queries rows with JSON-field operators (eq/ne/gt/lt/gte/lte/contains/in), optional
+ * sort and limit, pushing the work into SQLite (json_extract) instead of loading all
+ * rows and filtering in JS. Column names are parameterized (injection-safe).
+ */
+export async function queryDataTableRows(tableId: string, filters: QueryFilter[] = [], options: QueryOptions = {}) {
+  let sql = 'SELECT * FROM data_table_rows WHERE table_id = ?';
+  const args: any[] = [tableId];
+
+  for (const f of filters || []) {
+    if (!f || !f.column) continue;
+    const op = String(f.op || 'eq');
+    if (op === 'contains') {
+      sql += ` AND json_extract(data, '$.' || ?) LIKE ?`;
+      args.push(f.column, `%${f.value}%`);
+    } else if (op === 'in') {
+      const vals = Array.isArray(f.value) ? f.value : String(f.value ?? '').split(',').map(s => s.trim());
+      if (vals.length === 0) continue;
+      sql += ` AND json_extract(data, '$.' || ?) IN (${vals.map(() => '?').join(',')})`;
+      args.push(f.column, ...vals.map(coerceQueryValue));
+    } else {
+      sql += ` AND json_extract(data, '$.' || ?) ${QUERY_OPS[op] || '='} ?`;
+      args.push(f.column, coerceQueryValue(f.value));
+    }
+  }
+
+  if (options.sort?.column) {
+    sql += ` ORDER BY json_extract(data, '$.' || ?) ${options.sort.dir === 'desc' ? 'DESC' : 'ASC'}`;
+    args.push(options.sort.column);
+  } else {
+    sql += ' ORDER BY created_at ASC';
+  }
+
+  const limit = Math.min(5000, Math.max(1, Number(options.limit) || 1000));
+  const offset = Math.max(0, Number(options.offset) || 0);
+  sql += ` LIMIT ${limit} OFFSET ${offset}`;
+
+  const rows = await db.all(sql, args);
+  return rows.map(r => ({
+    id: r.id,
+    table_id: r.table_id,
+    data: JSON.parse(r.data),
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  }));
+}
+
 export async function updateDataTableRow(rowId: string, data: Record<string, any>) {
   const dataStr = JSON.stringify(data);
   await db.run(

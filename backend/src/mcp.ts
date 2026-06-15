@@ -18,7 +18,8 @@ import {
   deleteDataTable,
   upsertDataTableRow,
   incrementDataTableRow,
-  getOrCreateDataTableRow
+  getOrCreateDataTableRow,
+  queryDataTableRows
 } from './db.js';
 import { NodeRegistry } from './registry.js';
 import { assertSafeUrl } from './security.js';
@@ -412,6 +413,36 @@ const SYSTEM_TOOLS = [
     }
   },
   {
+    name: 'libreflow_query_data_table_rows',
+    description: 'Query rows with field operators, sorting and limit. Operators: eq, ne, gt, lt, gte, lte, contains, in.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tableId: { type: 'string', description: 'The unique ID of the table.' },
+        filters: {
+          type: 'array',
+          description: 'Filter list: [{ "column": "status", "op": "eq", "value": "active" }]. For "in", value is an array.',
+          items: {
+            type: 'object',
+            properties: {
+              column: { type: 'string' },
+              op: { type: 'string', enum: ['eq', 'ne', 'gt', 'lt', 'gte', 'lte', 'contains', 'in'] },
+              value: {}
+            },
+            required: ['column']
+          }
+        },
+        sort: {
+          type: 'object',
+          description: 'Optional sort: { "column": "score", "dir": "desc" }.',
+          properties: { column: { type: 'string' }, dir: { type: 'string', enum: ['asc', 'desc'] } }
+        },
+        limit: { type: 'number', description: 'Max rows to return (default 1000).' }
+      },
+      required: ['tableId']
+    }
+  },
+  {
     name: 'libreflow_get_data_table_rows',
     description: 'Fetch all rows from a specified data table by ID.',
     inputSchema: {
@@ -742,6 +773,15 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
           }
           const row = await getOrCreateDataTableRow(tId, String(key), defaults && typeof defaults === 'object' ? defaults : {});
           return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(row, null, 2) }] } } };
+        }
+
+        if (toolName === 'libreflow_query_data_table_rows') {
+          const { tableId: tId, filters = [], sort, limit } = toolArguments;
+          if (!tId) {
+            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId parameter' } } };
+          }
+          const rows = await queryDataTableRows(tId, Array.isArray(filters) ? filters : [], { sort, limit });
+          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) }] } } };
         }
 
         if (toolName === 'libreflow_get_data_table_rows') {

@@ -775,7 +775,8 @@ const dataTableNode: LibreFlowNodeDefinition = {
         { label: 'Eliminar fila (Delete)', value: 'delete' },
         { label: 'Insertar/Actualizar por clave (Upsert)', value: 'upsert' },
         { label: 'Incrementar contador (Increment)', value: 'increment' },
-        { label: 'Obtener o crear por clave (Get or Default)', value: 'getOrDefault' }
+        { label: 'Obtener o crear por clave (Get or Default)', value: 'getOrDefault' },
+        { label: 'Consultar con operadores (Query)', value: 'query' }
       ]
     },
     {
@@ -822,6 +823,36 @@ const dataTableNode: LibreFlowNodeDefinition = {
       label: 'Filtros de Búsqueda',
       type: 'keyvalue',
       default: []
+    },
+    {
+      name: 'queryFilters',
+      label: 'Filtros de Consulta (Query, JSON)',
+      type: 'json',
+      default: '[]',
+      placeholder: '[{"column":"status","op":"eq","value":"active"}]',
+      description: 'Operadores: eq, ne, gt, lt, gte, lte, contains, in.'
+    },
+    {
+      name: 'sortColumn',
+      label: 'Ordenar por (columna)',
+      type: 'string',
+      default: ''
+    },
+    {
+      name: 'sortDir',
+      label: 'Dirección de orden',
+      type: 'options',
+      default: 'asc',
+      options: [
+        { label: 'Ascendente', value: 'asc' },
+        { label: 'Descendente', value: 'desc' }
+      ]
+    },
+    {
+      name: 'limit',
+      label: 'Límite de resultados',
+      type: 'string',
+      default: '100'
     }
   ],
   execute: async (params) => {
@@ -832,7 +863,7 @@ const dataTableNode: LibreFlowNodeDefinition = {
 
     const {
       getDataTableRows, addDataTableRow, updateDataTableRow, deleteDataTableRow,
-      upsertDataTableRow, incrementDataTableRow, getOrCreateDataTableRow
+      upsertDataTableRow, incrementDataTableRow, getOrCreateDataTableRow, queryDataTableRows
     } = await import('./db.js');
 
     // Coerces keyvalue pairs into a typed object (string→bool/number), shared by write ops.
@@ -865,6 +896,19 @@ const dataTableNode: LibreFlowNodeDefinition = {
     if (operation === 'getOrDefault') {
       if (!key) throw new Error('Data Table Node error: key is required for getOrDefault operation');
       return await getOrCreateDataTableRow(tableId, String(key), buildDataObject(fields));
+    }
+
+    if (operation === 'query') {
+      let qf: any = params.queryFilters;
+      if (typeof qf === 'string') {
+        try { qf = JSON.parse(qf || '[]'); } catch { throw new Error('Data Table Node error: queryFilters must be valid JSON'); }
+      }
+      if (!Array.isArray(qf)) qf = [];
+      const sort = params.sortColumn
+        ? { column: params.sortColumn, dir: (params.sortDir === 'desc' ? 'desc' : 'asc') as 'asc' | 'desc' }
+        : undefined;
+      const limit = params.limit ? Number(params.limit) : undefined;
+      return await queryDataTableRows(tableId, qf, { sort, limit });
     }
 
     if (operation === 'append') {
