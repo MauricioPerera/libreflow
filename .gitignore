@@ -9,6 +9,8 @@ dist/
 database.sqlite
 database.sqlite.bak
 *.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 
 # Environment / secrets
 .env

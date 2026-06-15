@@ -28,7 +28,10 @@ vi.mock('../src/db.js', () => {
     ],
     addDataTableRow: async () => {},
     updateDataTableRow: async () => {},
-    deleteDataTableRow: async () => {}
+    deleteDataTableRow: async () => {},
+    upsertDataTableRow: async () => ({}),
+    incrementDataTableRow: async () => ({}),
+    getOrCreateDataTableRow: async () => ({})
   };
 });
 

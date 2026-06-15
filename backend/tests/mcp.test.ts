@@ -80,6 +80,9 @@ vi.mock('../src/db.js', () => {
     addDataTableRow: async (tableId: string, rowId: string, data: any) => {},
     updateDataTableRow: async (rowId: string, data: any) => {},
     deleteDataTableRow: async (rowId: string) => {},
+    upsertDataTableRow: async () => ({}),
+    incrementDataTableRow: async () => ({}),
+    getOrCreateDataTableRow: async () => ({}),
     getCredentialById: async (id: string) => id === 'cred-mcp'
       ? { id: 'cred-mcp', name: 'MCP Token', type: 'apiKey', data: { name: 'Authorization', value: 'Bearer secreto-123', in: 'header' } }
       : null,

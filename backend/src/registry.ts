@@ -772,7 +772,10 @@ const dataTableNode: LibreFlowNodeDefinition = {
         { label: 'Añadir fila (Append)', value: 'append' },
         { label: 'Buscar filas (Search)', value: 'search' },
         { label: 'Actualizar fila (Update)', value: 'update' },
-        { label: 'Eliminar fila (Delete)', value: 'delete' }
+        { label: 'Eliminar fila (Delete)', value: 'delete' },
+        { label: 'Insertar/Actualizar por clave (Upsert)', value: 'upsert' },
+        { label: 'Incrementar contador (Increment)', value: 'increment' },
+        { label: 'Obtener o crear por clave (Get or Default)', value: 'getOrDefault' }
       ]
     },
     {
@@ -790,6 +793,25 @@ const dataTableNode: LibreFlowNodeDefinition = {
       placeholder: 'row-123456789'
     },
     {
+      name: 'key',
+      label: 'Valor de la Clave (upsert/increment/get)',
+      type: 'string',
+      default: '',
+      placeholder: 'p.ej. el email o id que identifica la fila'
+    },
+    {
+      name: 'field',
+      label: 'Campo a Incrementar',
+      type: 'string',
+      default: 'count'
+    },
+    {
+      name: 'amount',
+      label: 'Incremento',
+      type: 'string',
+      default: '1'
+    },
+    {
       name: 'fields',
       label: 'Campos de la Fila',
       type: 'keyvalue',
@@ -803,12 +825,47 @@ const dataTableNode: LibreFlowNodeDefinition = {
     }
   ],
   execute: async (params) => {
-    const { operation = 'append', tableId, rowId, fields = [], filters = [] } = params;
+    const { operation = 'append', tableId, rowId, fields = [], filters = [], key, field = 'count', amount = '1' } = params;
     if (!tableId) {
       throw new Error('Data Table Node error: tableId is required');
     }
 
-    const { getDataTableRows, addDataTableRow, updateDataTableRow, deleteDataTableRow } = await import('./db.js');
+    const {
+      getDataTableRows, addDataTableRow, updateDataTableRow, deleteDataTableRow,
+      upsertDataTableRow, incrementDataTableRow, getOrCreateDataTableRow
+    } = await import('./db.js');
+
+    // Coerces keyvalue pairs into a typed object (string→bool/number), shared by write ops.
+    const buildDataObject = (items: any[]): Record<string, any> => {
+      const obj: Record<string, any> = {};
+      for (const item of items || []) {
+        if (item && item.key) {
+          let val = item.value;
+          if (typeof val === 'string') {
+            if (val === 'true') val = true;
+            else if (val === 'false') val = false;
+            else if (!isNaN(Number(val)) && val.trim() !== '') val = Number(val);
+          }
+          obj[item.key] = val;
+        }
+      }
+      return obj;
+    };
+
+    if (operation === 'upsert') {
+      return await upsertDataTableRow(tableId, buildDataObject(fields));
+    }
+
+    if (operation === 'increment') {
+      if (!key) throw new Error('Data Table Node error: key is required for increment operation');
+      const amt = Number(amount);
+      return await incrementDataTableRow(tableId, String(key), field, isNaN(amt) ? 1 : amt);
+    }
+
+    if (operation === 'getOrDefault') {
+      if (!key) throw new Error('Data Table Node error: key is required for getOrDefault operation');
+      return await getOrCreateDataTableRow(tableId, String(key), buildDataObject(fields));
+    }
 
     if (operation === 'append') {
       const dataObj: Record<string, any> = {};

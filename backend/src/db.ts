@@ -15,6 +15,12 @@ export async function initDatabase() {
 
   // Enforce foreign keys so ON DELETE CASCADE actually runs (off by default in SQLite).
   await db.exec('PRAGMA foreign_keys = ON');
+  // Wait for locks instead of failing with SQLITE_BUSY — matters now that data-table
+  // state ops (upsert/increment) can be written concurrently by multiple flows.
+  await db.exec('PRAGMA busy_timeout = 5000');
+  // WAL lets readers proceed during a write and keeps write locks brief, sharply
+  // reducing lock contention for concurrent state writes.
+  await db.exec('PRAGMA journal_mode = WAL');
 
   // Create workflows table
   await db.exec(`
@@ -109,10 +115,17 @@ export async function initDatabase() {
     );
   `);
 
+  // Data-table state engine: optional unique key column on the table + per-row derived
+  // key, enabling atomic upsert/increment and idempotency. NULL row_keys stay distinct
+  // in SQLite unique indexes, so non-keyed tables are unaffected.
+  await addColumnIfMissing('data_tables', 'key_column', 'TEXT');
+  await addColumnIfMissing('data_table_rows', 'row_key', 'TEXT');
+
   // Indexes for the hot filter/sort columns (avoid full table scans as data grows).
   await db.exec('CREATE INDEX IF NOT EXISTS idx_executions_wf ON executions(workflow_id, executed_at)');
   await db.exec('CREATE INDEX IF NOT EXISTS idx_versions_wf ON workflow_versions(workflow_id, version)');
   await db.exec('CREATE INDEX IF NOT EXISTS idx_rows_table ON data_table_rows(table_id)');
+  await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_rows_key ON data_table_rows(table_id, row_key)');
 
   console.log(`[LibreFlow Database] SQLite initialized at: ${dbPath}`);
 }
@@ -371,20 +384,34 @@ export async function getDataTableByName(name: string) {
   return table;
 }
 
-export async function saveDataTable(id: string, name: string, columns: any[]) {
+export async function saveDataTable(id: string, name: string, columns: any[], keyColumn?: string | null) {
   const colsStr = JSON.stringify(columns);
+  const key = keyColumn || null;
   const existing = await db.get('SELECT id FROM data_tables WHERE id = ?', [id]);
   if (existing) {
     await db.run(
-      'UPDATE data_tables SET name = ?, columns = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [name, colsStr, id]
+      'UPDATE data_tables SET name = ?, columns = ?, key_column = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [name, colsStr, key, id]
     );
   } else {
     await db.run(
-      'INSERT INTO data_tables (id, name, columns) VALUES (?, ?, ?)',
-      [id, name, colsStr]
+      'INSERT INTO data_tables (id, name, columns, key_column) VALUES (?, ?, ?, ?)',
+      [id, name, colsStr, key]
     );
   }
+}
+
+/** The unique key value for a row, derived from the table's key column (null = no key). */
+function computeRowKey(keyColumn: string | null | undefined, data: Record<string, any>): string | null {
+  if (!keyColumn) return null;
+  const v = data?.[keyColumn];
+  return v === undefined || v === null ? null : String(v);
+}
+
+async function getTableKeyColumn(tableId: string): Promise<string | null> {
+  const t = await db.get('SELECT key_column FROM data_tables WHERE id = ?', [tableId]);
+  if (!t) throw new Error(`Data table not found: ${tableId}`);
+  return t.key_column || null;
 }
 
 export async function deleteDataTable(id: string) {
@@ -408,11 +435,79 @@ export async function getDataTableRows(tableId: string, limit = 1000, offset = 0
 }
 
 export async function addDataTableRow(tableId: string, rowId: string, data: Record<string, any>) {
-  const dataStr = JSON.stringify(data);
+  const keyColumn = await getTableKeyColumn(tableId);
+  const rowKey = computeRowKey(keyColumn, data);
+  try {
+    await db.run(
+      'INSERT INTO data_table_rows (id, table_id, row_key, data) VALUES (?, ?, ?, ?)',
+      [rowId, tableId, rowKey, JSON.stringify(data)]
+    );
+  } catch (err: any) {
+    if (/UNIQUE constraint/i.test(err?.message || '')) {
+      throw new Error(`A row with key "${rowKey}" already exists in this table (use upsert).`);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Atomically inserts or updates a row by the table's key column (ON CONFLICT). Requires
+ * the table to declare a key column. This is the idempotency / state-write primitive.
+ */
+export async function upsertDataTableRow(tableId: string, data: Record<string, any>) {
+  const keyColumn = await getTableKeyColumn(tableId);
+  if (!keyColumn) throw new Error('Upsert requires the data table to have a key column.');
+  const rowKey = computeRowKey(keyColumn, data);
+  if (rowKey === null) throw new Error(`Row is missing the key column "${keyColumn}".`);
+  const id = `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   await db.run(
-    'INSERT INTO data_table_rows (id, table_id, data) VALUES (?, ?, ?)',
-    [rowId, tableId, dataStr]
+    `INSERT INTO data_table_rows (id, table_id, row_key, data) VALUES (?, ?, ?, ?)
+     ON CONFLICT(table_id, row_key) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP`,
+    [id, tableId, rowKey, JSON.stringify(data)]
   );
+  const row = await db.get('SELECT * FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  return { id: row.id, table_id: tableId, key: rowKey, data: JSON.parse(row.data) };
+}
+
+/**
+ * Atomically increments a numeric field of the row identified by `key`, creating the row
+ * if absent. Concurrency-safe: the read-modify-write happens in a single SQL statement.
+ */
+export async function incrementDataTableRow(tableId: string, key: string, field: string, amount = 1) {
+  const keyColumn = await getTableKeyColumn(tableId);
+  if (!keyColumn) throw new Error('Increment requires the data table to have a key column.');
+  const rowKey = String(key);
+  const id = `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  await db.run(
+    `INSERT INTO data_table_rows (id, table_id, row_key, data)
+     VALUES (?, ?, ?, json_object(?, ?, ?, ?))
+     ON CONFLICT(table_id, row_key) DO UPDATE
+     SET data = json_set(data, '$.' || ?, COALESCE(json_extract(data, '$.' || ?), 0) + ?),
+         updated_at = CURRENT_TIMESTAMP`,
+    [id, tableId, rowKey, keyColumn, key, field, amount, field, field, amount]
+  );
+  const row = await db.get('SELECT * FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  return { id: row.id, table_id: tableId, key: rowKey, data: JSON.parse(row.data) };
+}
+
+/** Returns the row with the given key, or inserts `defaults` and returns it if absent. */
+export async function getOrCreateDataTableRow(tableId: string, key: string, defaults: Record<string, any> = {}) {
+  const keyColumn = await getTableKeyColumn(tableId);
+  if (!keyColumn) throw new Error('get-or-default requires the data table to have a key column.');
+  const rowKey = String(key);
+  const existing = await db.get('SELECT * FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  if (existing) {
+    return { id: existing.id, table_id: tableId, key: rowKey, data: JSON.parse(existing.data), created: false };
+  }
+  const id = `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  const data = { ...defaults, [keyColumn]: key };
+  await db.run(
+    `INSERT INTO data_table_rows (id, table_id, row_key, data) VALUES (?, ?, ?, ?)
+     ON CONFLICT(table_id, row_key) DO NOTHING`,
+    [id, tableId, rowKey, JSON.stringify(data)]
+  );
+  const row = await db.get('SELECT * FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  return { id: row.id, table_id: tableId, key: rowKey, data: JSON.parse(row.data), created: true };
 }
 
 export async function updateDataTableRow(rowId: string, data: Record<string, any>) {

@@ -875,6 +875,17 @@
           </div>
         </div>
 
+        <div class="form-group" style="margin-top: 16px;">
+          <label class="config-label">Columna clave (única) — opcional</label>
+          <select v-model="dataTableKeyColumn" class="config-input">
+            <option value="">Sin clave (tabla simple)</option>
+            <option v-for="col in dataTableColumns.filter(c => c.name.trim())" :key="col.name" :value="col.name">{{ col.name }}</option>
+          </select>
+          <p style="font-size: 12px; color: hsl(var(--text-muted)); margin-top: 4px;">
+            Habilita upsert, incrementar contador, get-or-default e idempotencia (una fila por valor de clave).
+          </p>
+        </div>
+
         <div class="modal-actions" style="margin-top: 24px;">
           <button @click="showDataTableModal = false" class="btn btn-secondary">Cancelar</button>
           <button 
@@ -1004,6 +1015,7 @@ const showDataTableModal = ref(false);
 const editingTableId = ref<string | null>(null);
 const dataTableName = ref('');
 const dataTableColumns = ref<{ name: string; type: 'string' | 'number' | 'boolean' }[]>([]);
+const dataTableKeyColumn = ref('');
 const showRowModal = ref(false);
 const rowFormData = ref<Record<string, any>>({});
 const editingRowId = ref<string | null>(null);
@@ -1846,6 +1858,7 @@ const openCreateTableModal = () => {
   editingTableId.value = null;
   dataTableName.value = '';
   dataTableColumns.value = [{ name: 'id', type: 'string' }];
+  dataTableKeyColumn.value = '';
   showDataTableModal.value = true;
 };
 
@@ -1854,6 +1867,7 @@ const openEditTableSchemaModal = () => {
   editingTableId.value = selectedTable.value.id;
   dataTableName.value = selectedTable.value.name;
   dataTableColumns.value = parseJsonColumns(selectedTable.value.columns).map((c: any) => ({ ...c }));
+  dataTableKeyColumn.value = selectedTable.value.key_column || '';
   showDataTableModal.value = true;
 };
 
@@ -1874,7 +1888,8 @@ const saveDataTableToDb = async () => {
       body: JSON.stringify({
         id: tId,
         name: dataTableName.value.trim(),
-        columns: dataTableColumns.value
+        columns: dataTableColumns.value,
+        keyColumn: dataTableKeyColumn.value || null
       })
     });
     if (res.ok) {

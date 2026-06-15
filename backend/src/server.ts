@@ -387,11 +387,11 @@ app.get('/api/data-tables/:id', async (req, res) => {
 
 app.post('/api/data-tables', async (req, res) => {
   try {
-    const { id, name, columns } = req.body;
+    const { id, name, columns, keyColumn } = req.body;
     if (!id || !name || !Array.isArray(columns)) {
       return res.status(400).json({ error: 'id, name, and columns (array) are required' });
     }
-    await saveDataTable(id, name, columns);
+    await saveDataTable(id, name, columns, keyColumn || null);
     return res.json({ success: true, message: 'Data Table saved successfully' });
   } catch (err: any) {
     return serverError(res, err);

@@ -15,7 +15,10 @@ import {
   setWorkflowActiveState,
   updateDataTableRow,
   deleteDataTableRow,
-  deleteDataTable
+  deleteDataTable,
+  upsertDataTableRow,
+  incrementDataTableRow,
+  getOrCreateDataTableRow
 } from './db.js';
 import { NodeRegistry } from './registry.js';
 import { assertSafeUrl } from './security.js';
@@ -347,7 +350,7 @@ const SYSTEM_TOOLS = [
   },
   {
     name: 'libreflow_create_data_table',
-    description: 'Create a new data table with the specified name and columns.',
+    description: 'Create a new data table with the specified name and columns. Optionally set a unique key column to enable upsert/increment/idempotency.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -363,9 +366,49 @@ const SYSTEM_TOOLS = [
             },
             required: ['name', 'type']
           }
-        }
+        },
+        keyColumn: { type: 'string', description: 'Optional. Name of the column used as the unique key (enables upsert/increment/get-or-default).' }
       },
       required: ['name', 'columns']
+    }
+  },
+  {
+    name: 'libreflow_upsert_data_table_row',
+    description: 'Insert or update a row by the table key column (atomic, idempotent). Requires the table to have a key column.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tableId: { type: 'string', description: 'The unique ID of the table.' },
+        data: { type: 'object', description: 'The full row data; must include the key column.', additionalProperties: true }
+      },
+      required: ['tableId', 'data']
+    }
+  },
+  {
+    name: 'libreflow_increment_data_table_row',
+    description: 'Atomically increment a numeric field of the row identified by key, creating it if absent (concurrency-safe counter).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tableId: { type: 'string', description: 'The unique ID of the table.' },
+        key: { type: 'string', description: 'The key value identifying the row.' },
+        field: { type: 'string', description: 'The numeric field to increment.' },
+        amount: { type: 'number', description: 'Amount to add (default 1).' }
+      },
+      required: ['tableId', 'key', 'field']
+    }
+  },
+  {
+    name: 'libreflow_get_data_table_row',
+    description: 'Get the row identified by key, creating it from defaults if absent (get-or-default state read).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tableId: { type: 'string', description: 'The unique ID of the table.' },
+        key: { type: 'string', description: 'The key value identifying the row.' },
+        defaults: { type: 'object', description: 'Optional default field values used when the row is created.', additionalProperties: true }
+      },
+      required: ['tableId', 'key']
     }
   },
   {
@@ -665,13 +708,40 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
         }
 
         if (toolName === 'libreflow_create_data_table') {
-          const { name: tName, columns = [] } = toolArguments;
+          const { name: tName, columns = [], keyColumn } = toolArguments;
           if (!tName) {
             return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing name parameter' } } };
           }
           const tId = `table-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-          await saveDataTable(tId, tName, columns);
+          await saveDataTable(tId, tName, columns, keyColumn || null);
           return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Data table '${tName}' created successfully with ID: ${tId}` }] } } };
+        }
+
+        if (toolName === 'libreflow_upsert_data_table_row') {
+          const { tableId: tId, data } = toolArguments;
+          if (!tId || !data || typeof data !== 'object') {
+            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId or data parameter' } } };
+          }
+          const row = await upsertDataTableRow(tId, data);
+          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(row, null, 2) }] } } };
+        }
+
+        if (toolName === 'libreflow_increment_data_table_row') {
+          const { tableId: tId, key, field, amount = 1 } = toolArguments;
+          if (!tId || !key || !field) {
+            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId, key or field parameter' } } };
+          }
+          const row = await incrementDataTableRow(tId, String(key), field, Number(amount) || 1);
+          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(row, null, 2) }] } } };
+        }
+
+        if (toolName === 'libreflow_get_data_table_row') {
+          const { tableId: tId, key, defaults = {} } = toolArguments;
+          if (!tId || !key) {
+            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId or key parameter' } } };
+          }
+          const row = await getOrCreateDataTableRow(tId, String(key), defaults && typeof defaults === 'object' ? defaults : {});
+          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(row, null, 2) }] } } };
         }
 
         if (toolName === 'libreflow_get_data_table_rows') {
