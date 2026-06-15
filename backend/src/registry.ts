@@ -1101,6 +1101,12 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       label: 'Temperatura',
       type: 'string',
       default: '0'
+    },
+    {
+      name: 'timeoutMs',
+      label: 'Timeout por llamada al LLM (ms)',
+      type: 'string',
+      default: '120000'
     }
   ],
   execute: async (params) => {
@@ -1116,7 +1122,8 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       mcpAuthentication = 'none',
       mcpCredentialId,
       maxIterations = '5',
-      temperature = '0'
+      temperature = '0',
+      timeoutMs = '120000'
     } = params;
 
     if (!model) throw new Error('AI Agent error: model is required');
@@ -1194,6 +1201,7 @@ const aiAgentNode: LibreFlowNodeDefinition = {
 
     const maxIter = Math.max(1, Math.min(20, Number(maxIterations) || 5));
     const temp = Number(temperature);
+    const llmTimeout = Math.max(5000, Number(timeoutMs) || 120000);
     const trace: any[] = [];
     let answer = '';
     let hitCap = true;
@@ -1204,7 +1212,17 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       const body: any = { model, messages, temperature: isNaN(temp) ? 0 : temp, stream: false };
       if (openaiTools.length) { body.tools = openaiTools; body.tool_choice = 'auto'; }
 
-      const res = await fetch(chatUrl, { method: 'POST', headers, body: JSON.stringify(body) });
+      // Abort a hung LLM call instead of blocking the whole workflow indefinitely.
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), llmTimeout);
+      let res: Response;
+      try {
+        res = await fetch(chatUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
+      } catch (err: any) {
+        throw new Error(err?.name === 'AbortError' ? `AI Agent error: LLM call timed out after ${llmTimeout}ms` : `AI Agent error: ${err?.message || err}`);
+      } finally {
+        clearTimeout(timer);
+      }
       if (!res.ok) {
         const t = await res.text();
         throw new Error(`AI Agent LLM error: HTTP ${res.status} ${t.slice(0, 200)}`);
