@@ -1,5 +1,24 @@
 import { describe, it, expect, vi } from 'vitest';
 import { WorkflowEngine, Workflow } from '../src/engine.js';
+import { NodeRegistry } from '../src/registry.js';
+
+// Deterministic retry node: fails the first two calls, then succeeds. In-memory counter
+// (no jsCode worker / no temp file / no 5s timeout) so the retry test isn't load-sensitive.
+let retryAttempts = 0;
+NodeRegistry.register({
+  type: 'testRetryNode',
+  displayName: 'Test Retry',
+  category: 'Test',
+  icon: 'T',
+  description: 'Fails twice then succeeds (test fixture).',
+  ui: { inputs: [{ id: 'main' }], outputs: [{ id: 'main' }] },
+  parameters: [],
+  execute: async () => {
+    retryAttempts++;
+    if (retryAttempts < 3) throw new Error('Try again');
+    return { attempts: retryAttempts };
+  },
+} as any);
 
 vi.mock('../src/db.js', () => {
   return {
@@ -224,34 +243,18 @@ describe('WorkflowEngine', () => {
   });
 
   it('should retry execution on node failure when retryOnFail is true', async () => {
-    const fs = require('fs');
-    if (fs.existsSync('counter.txt')) {
-      fs.unlinkSync('counter.txt');
-    }
-    
+    retryAttempts = 0; // reset the in-memory counter for this run
+
     const workflow: Workflow = {
       nodes: [
         { id: '1', type: 'trigger', name: 'Start', parameters: {} },
-        { 
-          id: '2', 
-          type: 'jsCode', 
-          name: 'RetryNode', 
-          parameters: { 
-            code: `
-              const fs = require('fs');
-              let count = 0;
-              if (fs.existsSync('counter.txt')) {
-                count = parseInt(fs.readFileSync('counter.txt', 'utf8')) || 0;
-              }
-              count++;
-              fs.writeFileSync('counter.txt', count.toString());
-              if (count < 3) {
-                throw new Error("Try again");
-              }
-              return { attempts: count };
-            `,
-            settings: { retryOnFail: true, maxRetries: 3, retryDelayMs: 100 }
-          } 
+        {
+          id: '2',
+          type: 'testRetryNode',
+          name: 'RetryNode',
+          parameters: {
+            settings: { retryOnFail: true, maxRetries: 3, retryDelayMs: 10 }
+          }
         }
       ],
       connections: [
@@ -263,10 +266,6 @@ describe('WorkflowEngine', () => {
     expect(report.success).toBe(true);
     expect(report.nodeResults['2'].status).toBe('success');
     expect(report.nodeResults['2'].output.attempts).toBe(3);
-
-    if (fs.existsSync('counter.txt')) {
-      fs.unlinkSync('counter.txt');
-    }
   });
 
   it('should terminate execution on infinite loop in jsCode node due to timeout', async () => {
