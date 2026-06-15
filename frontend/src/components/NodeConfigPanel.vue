@@ -42,8 +42,8 @@
           <!-- Render dropdown options -->
           <div v-if="param.type === 'options'">
             <!-- Special case: Credential ID -->
-            <select 
-              v-if="param.name === 'credentialId'"
+            <select
+              v-if="param.name === 'credentialId' || param.name === 'mcpCredentialId'"
               v-model="localParams[param.name]"
               class="config-select"
               :disabled="readOnly"

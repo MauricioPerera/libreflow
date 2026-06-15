@@ -1062,10 +1062,33 @@ const aiAgentNode: LibreFlowNodeDefinition = {
     },
     {
       name: 'mcpServerId',
-      label: 'Servidor MCP (herramientas)',
+      label: 'Servidor MCP propio (herramientas)',
       type: 'options',
       default: '',
       options: []
+    },
+    {
+      name: 'mcpServerUrl',
+      label: 'Servidor MCP externo (URL)',
+      type: 'string',
+      default: '',
+      placeholder: 'Opcional. Tiene prioridad sobre el servidor propio. Streamable HTTP o SSE.'
+    },
+    {
+      name: 'mcpAuthentication',
+      label: 'Auth del servidor MCP externo',
+      type: 'options',
+      default: 'none',
+      options: [
+        { label: 'Ninguna', value: 'none' },
+        { label: 'Credencial (API Key)', value: 'genericCredential' }
+      ]
+    },
+    {
+      name: 'mcpCredentialId',
+      label: 'Credencial del servidor MCP',
+      type: 'options',
+      default: ''
     },
     {
       name: 'maxIterations',
@@ -1089,6 +1112,9 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       systemPrompt,
       userMessage,
       mcpServerId,
+      mcpServerUrl,
+      mcpAuthentication = 'none',
+      mcpCredentialId,
       maxIterations = '5',
       temperature = '0'
     } = params;
@@ -1114,21 +1140,52 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       }
     }
 
-    // Toolset: a named MCP server, called IN-PROCESS via dispatchMcpRpc (no HTTP, no auth).
-    const { dispatchMcpRpc } = await import('./mcp.js');
-    let scope: any = null;
+    const toOpenAI = (tools: any[]) => tools.map((t: any) => ({
+      type: 'function',
+      function: { name: t.name, description: t.description, parameters: t.inputSchema || { type: 'object', properties: {} } }
+    }));
+
+    // Toolset resolution. Two modes:
+    //  - External MCP server (URL): via the SDK client, optionally authenticated.
+    //  - Own named MCP server (id): IN-PROCESS via dispatchMcpRpc (no HTTP, no auth).
+    // `callTool(name, args)` abstracts the dispatch for the loop below.
     let openaiTools: any[] = [];
-    if (mcpServerId) {
+    let callTool: ((name: string, args: any) => Promise<string>) | null = null;
+
+    if (mcpServerUrl) {
+      // Build MCP-server auth headers from the vault (same scheme as httpRequest/mcpToolCall).
+      const mcpHeaders: Record<string, string> = {};
+      if (mcpAuthentication === 'genericCredential' && mcpCredentialId) {
+        const cred = await getCredentialById(mcpCredentialId);
+        if (cred && cred.data) {
+          if (cred.type === 'apiKey') {
+            const { name = '', value = '' } = cred.data;
+            if (name && value) mcpHeaders[name] = value;
+          } else if (cred.type === 'basicAuth') {
+            const { user = '', password = '' } = cred.data;
+            mcpHeaders['Authorization'] = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
+          }
+        }
+      }
+      const { fetchToolsFromMcpServer, executeMcpToolCall } = await import('./mcp.js');
+      openaiTools = toOpenAI(await fetchToolsFromMcpServer(mcpServerUrl, mcpHeaders));
+      callTool = async (name, args) => {
+        const result = await executeMcpToolCall(mcpServerUrl, name, args, mcpHeaders);
+        return result?.content?.[0]?.text ?? JSON.stringify(result ?? {});
+      };
+    } else if (mcpServerId) {
+      const { dispatchMcpRpc } = await import('./mcp.js');
       const { getMcpServerById } = await import('./db.js');
       const server = await getMcpServerById(mcpServerId);
       if (!server) throw new Error(`AI Agent error: MCP server "${mcpServerId}" not found`);
-      scope = { workflowIds: server.workflow_ids, exposeSystemTools: server.expose_system_tools };
+      const scope = { workflowIds: server.workflow_ids, exposeSystemTools: server.expose_system_tools };
       const listed = await dispatchMcpRpc({ jsonrpc: '2.0', id: 0, method: 'tools/list' }, scope);
-      const tools = listed.payload?.result?.tools || [];
-      openaiTools = tools.map((t: any) => ({
-        type: 'function',
-        function: { name: t.name, description: t.description, parameters: t.inputSchema || { type: 'object', properties: {} } }
-      }));
+      openaiTools = toOpenAI(listed.payload?.result?.tools || []);
+      callTool = async (name, args) => {
+        const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 0, method: 'tools/call', params: { name, arguments: args } }, scope);
+        if (r.payload?.error) return 'error: ' + r.payload.error.message;
+        return r.payload?.result?.content?.[0]?.text ?? JSON.stringify(r.payload?.result ?? {});
+      };
     }
 
     const messages: any[] = [];
@@ -1168,12 +1225,7 @@ const aiAgentNode: LibreFlowNodeDefinition = {
         try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* leave empty */ }
         let resultText = '';
         try {
-          const r = await dispatchMcpRpc(
-            { jsonrpc: '2.0', id: 0, method: 'tools/call', params: { name: tc.function.name, arguments: args } },
-            scope
-          );
-          if (r.payload?.error) resultText = 'error: ' + r.payload.error.message;
-          else resultText = r.payload?.result?.content?.[0]?.text ?? JSON.stringify(r.payload?.result ?? {});
+          resultText = callTool ? await callTool(tc.function.name, args) : 'error: no toolset configured';
         } catch (e: any) {
           resultText = 'error: ' + e.message;
         }
