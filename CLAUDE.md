@@ -52,9 +52,15 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
 - **dataTableEvents.ts** — reactive data-table triggers: a decoupled event bus (db.ts emits,
   triggerManager subscribes — so db never imports the executor) plus an `AsyncLocalStorage`
   trigger-depth guard that caps self-feeding cascades (`MAX_TRIGGER_DEPTH`).
-- **triggerManager.ts** — registers active workflows' background triggers: `cron` (node-cron)
-  and `dataTable` (subscribes to row insert/update; dispatches the flow fire-and-forget,
-  detached from `execStack`).
+- **triggerManager.ts** — registers active workflows' background triggers: `cron` (node-cron),
+  `dataTable` (subscribes to row insert/update; dispatches the flow fire-and-forget,
+  detached from `execStack`) and `stream` (delegates to `streamTriggers.ts`).
+- **streamTriggers.ts** — long-running/streaming triggers (`StreamTriggerManager`): persistent
+  connections over **SSE** (native fetch), **WebSocket** (`ws`), **MQTT** (`mqtt`) and **IMAP**
+  (`imapflow`) that fire the flow per inbound message (detached, like dataTable). Common
+  lifecycle: connect → fire-per-message → exponential-backoff reconnect on drop → clean
+  teardown. Transports are injectable adapters (`ConnectFn`) — the manager owns the backoff;
+  the SSRF guard maps ws/mqtt schemes to http for `assertSafeUrl`.
 - **server.ts** — Express API. `requireAuth` on `/api`, HMAC on `/hooks/:id`, gzip compression
   (SSE excluded), rate limiting, generic 500s (real error logged, masked to client) via
   `serverError`. Mounts the public named-MCP-server router at `/mcp` (outside `/api` auth).

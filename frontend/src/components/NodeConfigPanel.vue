@@ -502,12 +502,28 @@ const getParamOptions = (param: NodeParameterSchema) => {
 };
 
 // Hides trigger-mode-specific fields when their mode isn't selected (keeps the form clean).
+const STREAM_PARAMS = ['streamTransport', 'streamUrl', 'mqttTopic', 'imapHost', 'imapPort', 'imapMailbox', 'imapSecure'];
+
 const isParamVisible = (param: NodeParameterSchema) => {
   const mode = localParams.value?.triggerMode;
+  const isTrigger = props.node?.type === 'trigger';
   if (param.name === 'cronExpression') return mode === 'cron';
   if (param.name === 'tableEvent') return mode === 'dataTable';
-  if (param.name === 'tableId' && props.node?.type === 'trigger') return mode === 'dataTable';
-  if (param.name === 'inputSchema') return mode !== 'dataTable';
+  if (param.name === 'tableId' && isTrigger) return mode === 'dataTable';
+  if (param.name === 'inputSchema') return mode !== 'dataTable' && mode !== 'stream';
+
+  // Parámetros del trigger de streaming (solo en modo stream, sub-filtrados por transporte).
+  if (isTrigger && STREAM_PARAMS.includes(param.name)) {
+    if (mode !== 'stream') return false;
+    const tr = localParams.value?.streamTransport;
+    if (param.name === 'streamUrl') return tr === 'sse' || tr === 'websocket' || tr === 'mqtt';
+    if (param.name === 'mqttTopic') return tr === 'mqtt';
+    if (param.name === 'imapHost' || param.name === 'imapPort' || param.name === 'imapMailbox' || param.name === 'imapSecure') return tr === 'imap';
+    return true; // streamTransport
+  }
+  // El trigger solo muestra credencial en modo stream; otros nodos (httpRequest, etc.) siempre.
+  if (param.name === 'credentialId' && isTrigger) return mode === 'stream';
+
   return true;
 };
 

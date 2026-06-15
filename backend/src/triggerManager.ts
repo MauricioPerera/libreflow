@@ -3,6 +3,7 @@ import { getActiveWorkflows, getWorkflowById } from './db.js';
 import { executeWorkflowAndRecord, execStack } from './executor.js';
 import { cronTooFrequent } from './security.js';
 import { dataTableBus, triggerContext, RowEvent, subscribedTables } from './dataTableEvents.js';
+import { streamTriggerManager, StreamTransport } from './streamTriggers.js';
 
 interface DataTableSub { workflowId: string; event: string }
 
@@ -71,7 +72,30 @@ class TriggerManager {
     const triggerNodes = (workflow.nodes || []).filter((n: any) => n.type === 'trigger');
 
     for (const node of triggerNodes) {
-      const { triggerMode = 'manual', cronExpression, tableId, tableEvent = 'any' } = node.parameters || {};
+      const p = node.parameters || {};
+      const { triggerMode = 'manual', cronExpression, tableId, tableEvent = 'any' } = p;
+
+      if (triggerMode === 'stream') {
+        const transport = p.streamTransport as StreamTransport;
+        if (!transport) {
+          console.warn(`[TriggerManager] stream trigger sin transporte en "${workflow.name}" (${workflow.id}). Skipping.`);
+          continue;
+        }
+        streamTriggerManager.start({
+          workflowId: workflow.id,
+          workflowName: workflow.name,
+          nodeId: node.id,
+          transport,
+          url: p.streamUrl,
+          topic: p.mqttTopic,
+          mailbox: p.imapMailbox,
+          host: p.imapHost,
+          port: p.imapPort ? Number(p.imapPort) : undefined,
+          secure: p.imapSecure !== false,
+          credentialId: p.credentialId,
+        });
+        continue;
+      }
 
       if (triggerMode === 'dataTable') {
         if (!tableId) {
@@ -128,6 +152,9 @@ class TriggerManager {
 
   // Stop triggers for a specific workflow
   stopTriggers(workflowId: string) {
+    // Close any persistent streaming connections (SSE/WS/MQTT/IMAP).
+    streamTriggerManager.stopWorkflow(workflowId);
+
     const jobs = this.cronJobs.get(workflowId);
     if (jobs) {
       for (const job of jobs) {
@@ -152,6 +179,7 @@ class TriggerManager {
   // Stop all active triggers across all workflows
   stopAll() {
     console.log('[TriggerManager] Stopping all active cron jobs...');
+    streamTriggerManager.stopAll();
     for (const [workflowId, jobs] of this.cronJobs.entries()) {
       for (const job of jobs) {
         job.stop();
