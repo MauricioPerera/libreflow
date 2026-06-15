@@ -2,13 +2,24 @@ import { schedule, validate, ScheduledTask } from 'node-cron';
 import { getActiveWorkflows, getWorkflowById } from './db.js';
 import { executeWorkflowAndRecord } from './executor.js';
 import { cronTooFrequent } from './security.js';
+import { dataTableBus, triggerContext, RowEvent } from './dataTableEvents.js';
+
+interface DataTableSub { workflowId: string; event: string }
 
 class TriggerManager {
   private cronJobs: Map<string, ScheduledTask[]> = new Map();
+  // tableId -> subscriptions (which active workflows react to writes on that table).
+  private dataTableSubs: Map<string, DataTableSub[]> = new Map();
+  private busWired = false;
 
   // Initialize all active triggers on server startup
   async init() {
     console.log('[TriggerManager] Initializing active background triggers...');
+    // Wire the data-table event bus exactly once.
+    if (!this.busWired) {
+      dataTableBus.on('row', (evt: RowEvent) => this.handleRowEvent(evt));
+      this.busWired = true;
+    }
     try {
       const activeWorkflows = await getActiveWorkflows();
       for (const workflow of activeWorkflows) {
@@ -20,6 +31,35 @@ class TriggerManager {
     }
   }
 
+  /** Runs every active workflow subscribed to a row event, bounded by the depth guard. */
+  private handleRowEvent(evt: RowEvent) {
+    const subs = this.dataTableSubs.get(evt.tableId);
+    if (!subs || subs.length === 0) return;
+
+    for (const sub of subs) {
+      if (sub.event !== 'any' && sub.event !== evt.event) continue;
+      // Fire-and-forget: never block the write that produced the event.
+      (async () => {
+        try {
+          const workflow = await getWorkflowById(sub.workflowId);
+          if (!workflow || !workflow.active) return;
+          const payload = {
+            source: 'dataTable',
+            tableId: evt.tableId,
+            rowId: evt.rowId,
+            event: evt.event,
+            row: evt.data,
+            timestamp: new Date().toISOString(),
+          };
+          // Run one trigger-hop deeper so the cascade guard can cap the chain.
+          await triggerContext.run({ depth: evt.depth + 1 }, () => executeWorkflowAndRecord(workflow, payload));
+        } catch (err) {
+          console.error(`[DataTableTrigger] Error running workflow ${sub.workflowId} for table ${evt.tableId}:`, err);
+        }
+      })();
+    }
+  }
+
   // Start triggers for a specific workflow
   async startTriggers(workflow: any) {
     this.stopTriggers(workflow.id);
@@ -28,7 +68,19 @@ class TriggerManager {
     const triggerNodes = (workflow.nodes || []).filter((n: any) => n.type === 'trigger');
 
     for (const node of triggerNodes) {
-      const { triggerMode = 'manual', cronExpression } = node.parameters || {};
+      const { triggerMode = 'manual', cronExpression, tableId, tableEvent = 'any' } = node.parameters || {};
+
+      if (triggerMode === 'dataTable') {
+        if (!tableId) {
+          console.warn(`[TriggerManager] dataTable trigger without tableId in "${workflow.name}" (${workflow.id}). Skipping.`);
+          continue;
+        }
+        const subs = this.dataTableSubs.get(tableId) || [];
+        subs.push({ workflowId: workflow.id, event: tableEvent });
+        this.dataTableSubs.set(tableId, subs);
+        console.log(`[TriggerManager] Subscribed workflow "${workflow.name}" (${workflow.id}) to table ${tableId} [${tableEvent}]`);
+        continue;
+      }
 
       if (triggerMode === 'cron') {
         if (!cronExpression || !validate(cronExpression)) {
@@ -79,6 +131,13 @@ class TriggerManager {
       }
       this.cronJobs.delete(workflowId);
       console.log(`[TriggerManager] Stopped active cron jobs for workflow ${workflowId}`);
+    }
+
+    // Remove this workflow's data-table subscriptions.
+    for (const [tableId, subs] of this.dataTableSubs.entries()) {
+      const remaining = subs.filter(s => s.workflowId !== workflowId);
+      if (remaining.length === 0) this.dataTableSubs.delete(tableId);
+      else if (remaining.length !== subs.length) this.dataTableSubs.set(tableId, remaining);
     }
   }
 

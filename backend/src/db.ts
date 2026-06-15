@@ -2,6 +2,7 @@ import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import path from 'path';
 import { encrypt, decrypt } from './encryption.js';
+import { emitRowEvent } from './dataTableEvents.js';
 
 let db: Database<sqlite3.Database, sqlite3.Statement>;
 
@@ -448,6 +449,7 @@ export async function addDataTableRow(tableId: string, rowId: string, data: Reco
     }
     throw err;
   }
+  emitRowEvent(tableId, rowId, 'insert', data);
 }
 
 /**
@@ -459,6 +461,7 @@ export async function upsertDataTableRow(tableId: string, data: Record<string, a
   if (!keyColumn) throw new Error('Upsert requires the data table to have a key column.');
   const rowKey = computeRowKey(keyColumn, data);
   if (rowKey === null) throw new Error(`Row is missing the key column "${keyColumn}".`);
+  const existed = await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
   const id = `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   await db.run(
     `INSERT INTO data_table_rows (id, table_id, row_key, data) VALUES (?, ?, ?, ?)
@@ -466,6 +469,7 @@ export async function upsertDataTableRow(tableId: string, data: Record<string, a
     [id, tableId, rowKey, JSON.stringify(data)]
   );
   const row = await db.get('SELECT * FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  emitRowEvent(tableId, row.id, existed ? 'update' : 'insert', JSON.parse(row.data));
   return { id: row.id, table_id: tableId, key: rowKey, data: JSON.parse(row.data) };
 }
 
@@ -477,6 +481,7 @@ export async function incrementDataTableRow(tableId: string, key: string, field:
   const keyColumn = await getTableKeyColumn(tableId);
   if (!keyColumn) throw new Error('Increment requires the data table to have a key column.');
   const rowKey = String(key);
+  const existed = await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
   const id = `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   await db.run(
     `INSERT INTO data_table_rows (id, table_id, row_key, data)
@@ -487,6 +492,7 @@ export async function incrementDataTableRow(tableId: string, key: string, field:
     [id, tableId, rowKey, keyColumn, key, field, amount, field, field, amount]
   );
   const row = await db.get('SELECT * FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  emitRowEvent(tableId, row.id, existed ? 'update' : 'insert', JSON.parse(row.data));
   return { id: row.id, table_id: tableId, key: rowKey, data: JSON.parse(row.data) };
 }
 
@@ -507,6 +513,7 @@ export async function getOrCreateDataTableRow(tableId: string, key: string, defa
     [id, tableId, rowKey, JSON.stringify(data)]
   );
   const row = await db.get('SELECT * FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  emitRowEvent(tableId, row.id, 'insert', JSON.parse(row.data));
   return { id: row.id, table_id: tableId, key: rowKey, data: JSON.parse(row.data), created: true };
 }
 
@@ -581,6 +588,8 @@ export async function updateDataTableRow(rowId: string, data: Record<string, any
     'UPDATE data_table_rows SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
     [dataStr, rowId]
   );
+  const row = await db.get('SELECT table_id FROM data_table_rows WHERE id = ?', [rowId]);
+  if (row) emitRowEvent(row.table_id, rowId, 'update', data);
 }
 
 export async function deleteDataTableRow(rowId: string) {

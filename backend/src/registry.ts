@@ -35,7 +35,26 @@ const triggerNode: LibreFlowNodeDefinition = {
       options: [
         { label: 'Manual (Ejecución directa)', value: 'manual' },
         { label: 'Webhook (URL Externa)', value: 'webhook' },
-        { label: 'Cron (Programado)', value: 'cron' }
+        { label: 'Cron (Programado)', value: 'cron' },
+        { label: 'Tabla de Datos (Reactivo)', value: 'dataTable' }
+      ]
+    },
+    {
+      name: 'tableId',
+      label: 'Tabla de Datos a observar',
+      type: 'options',
+      default: '',
+      options: []
+    },
+    {
+      name: 'tableEvent',
+      label: 'Evento que dispara',
+      type: 'options',
+      default: 'any',
+      options: [
+        { label: 'Insertar o actualizar', value: 'any' },
+        { label: 'Solo al insertar', value: 'insert' },
+        { label: 'Solo al actualizar', value: 'update' }
       ]
     },
     {

@@ -31,10 +31,10 @@
 
       <!-- Dynamic SDK Parameter Form Fields -->
       <div v-if="nodeDef" class="node-config-form">
-        <div 
-          v-for="param in nodeDef.parameters" 
-          :key="param.name" 
-          v-show="param.name !== 'cronExpression' || localParams.triggerMode === 'cron'"
+        <div
+          v-for="param in nodeDef.parameters"
+          :key="param.name"
+          v-show="isParamVisible(param)"
           class="config-group"
         >
           <label class="config-label">{{ param.label }}</label>
@@ -492,10 +492,20 @@ const getParamOptions = (param: NodeParameterSchema) => {
   if (props.node?.type === 'mcpToolCall' && param.name === 'toolName') {
     return dynamicOptions.value['toolName'] || [];
   }
-  if (props.node?.type === 'dataTable' && param.name === 'tableId') {
+  if ((props.node?.type === 'dataTable' || props.node?.type === 'trigger') && param.name === 'tableId') {
     return dynamicOptions.value['tableId'] || [];
   }
   return param.options || [];
+};
+
+// Hides trigger-mode-specific fields when their mode isn't selected (keeps the form clean).
+const isParamVisible = (param: NodeParameterSchema) => {
+  const mode = localParams.value?.triggerMode;
+  if (param.name === 'cronExpression') return mode === 'cron';
+  if (param.name === 'tableEvent') return mode === 'dataTable';
+  if (param.name === 'tableId' && props.node?.type === 'trigger') return mode === 'dataTable';
+  if (param.name === 'inputSchema') return mode !== 'dataTable';
+  return true;
 };
 
 let debounceTimeout: any = null;
@@ -566,7 +576,7 @@ const fetchDataTablesForDropdown = async () => {
 };
 
 watch(() => props.node?.id, () => {
-  if (props.node?.type === 'dataTable') {
+  if (props.node?.type === 'dataTable' || props.node?.type === 'trigger') {
     fetchDataTablesForDropdown();
   }
 }, { immediate: true });
