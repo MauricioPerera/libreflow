@@ -435,6 +435,11 @@ export async function getDataTableRows(tableId: string, limit = 1000, offset = 0
   }));
 }
 
+export async function countDataTableRows(tableId: string): Promise<number> {
+  const r = await db.get('SELECT COUNT(*) as c FROM data_table_rows WHERE table_id = ?', [tableId]);
+  return r?.c ?? 0;
+}
+
 export async function addDataTableRow(tableId: string, rowId: string, data: Record<string, any>) {
   const keyColumn = await getTableKeyColumn(tableId);
   const rowKey = computeRowKey(keyColumn, data);

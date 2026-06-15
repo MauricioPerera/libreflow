@@ -77,6 +77,7 @@ vi.mock('../src/db.js', () => {
     getDataTableRows: async (tableId: string) => [
       { id: 'row-1', table_id: tableId, data: { email: 'test@example.com' }, created_at: '2026-06-14T00:00:00Z', updated_at: '2026-06-14T00:00:00Z' }
     ],
+    countDataTableRows: async () => 1,
     addDataTableRow: async (tableId: string, rowId: string, data: any) => {},
     updateDataTableRow: async (rowId: string, data: any) => {},
     deleteDataTableRow: async (rowId: string) => {},

@@ -189,6 +189,18 @@ describe('Tool name uniqueness & new system tools', () => {
     expect(rows[0].data.status).toBe('active');
   });
 
+  it('las system tools declaran annotations (read-only / destructive)', async () => {
+    const { payload } = await dispatchMcpRpc(
+      { jsonrpc: '2.0', id: 7, method: 'tools/list' },
+      { workflowIds: ['flow-a'], exposeSystemTools: true }
+    );
+    const byName: Record<string, any> = {};
+    for (const t of payload.result.tools) byName[t.name] = t;
+    expect(byName['libreflow_list_workflows'].annotations.readOnlyHint).toBe(true);
+    expect(byName['libreflow_delete_workflow'].annotations.destructiveHint).toBe(true);
+    expect(byName['libreflow_upsert_data_table_row'].annotations.idempotentHint).toBe(true);
+  });
+
   it('las nuevas system tools están bloqueadas sin opt-in', async () => {
     const { status, payload } = await dispatchMcpRpc(
       { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'libreflow_delete_workflow', arguments: { id: 'flow-a' } } },
