@@ -38,6 +38,8 @@ export async function initDatabase() {
   // Idempotent column migrations: only swallow the "duplicate column" error, rethrow the rest.
   await addColumnIfMissing('workflows', 'active', 'INTEGER DEFAULT 0');
   await addColumnIfMissing('workflows', 'onErrorWorkflowId', 'TEXT');
+  // Human/agent-facing description; surfaced as the MCP tool description for better selection.
+  await addColumnIfMissing('workflows', 'description', 'TEXT');
 
   // Create executions table
   await db.exec(`
@@ -146,7 +148,7 @@ async function addColumnIfMissing(table: string, column: string, definition: str
 }
 
 export async function getWorkflows() {
-  return db.all('SELECT id, name, active, onErrorWorkflowId, created_at, updated_at FROM workflows ORDER BY updated_at DESC');
+  return db.all('SELECT id, name, description, active, onErrorWorkflowId, created_at, updated_at FROM workflows ORDER BY updated_at DESC');
 }
 
 export async function getActiveWorkflows() {
@@ -172,9 +174,11 @@ export async function getWorkflowById(id: string) {
   return workflow;
 }
 
-export async function saveWorkflow(id: string, name: string, nodes: any, connections: any, onErrorWorkflowId?: string) {
+export async function saveWorkflow(id: string, name: string, nodes: any, connections: any, onErrorWorkflowId?: string, description?: string | null) {
   const nodesStr = JSON.stringify(nodes);
   const connectionsStr = JSON.stringify(connections);
+  // undefined => keep the existing description (COALESCE); null/'' => clear it.
+  const desc = description === undefined ? null : description;
 
   // Persist the workflow and its version atomically — never leave one without the other.
   await db.run('BEGIN');
@@ -182,13 +186,13 @@ export async function saveWorkflow(id: string, name: string, nodes: any, connect
     const existing = await db.get('SELECT id FROM workflows WHERE id = ?', [id]);
     if (existing) {
       await db.run(
-        'UPDATE workflows SET name = ?, nodes = ?, connections = ?, onErrorWorkflowId = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [name, nodesStr, connectionsStr, onErrorWorkflowId || null, id]
+        'UPDATE workflows SET name = ?, nodes = ?, connections = ?, onErrorWorkflowId = ?, description = COALESCE(?, description), updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [name, nodesStr, connectionsStr, onErrorWorkflowId || null, description === undefined ? null : desc, id]
       );
     } else {
       await db.run(
-        'INSERT INTO workflows (id, name, nodes, connections, onErrorWorkflowId, active) VALUES (?, ?, ?, ?, ?, 0)',
-        [id, name, nodesStr, connectionsStr, onErrorWorkflowId || null]
+        'INSERT INTO workflows (id, name, nodes, connections, onErrorWorkflowId, description, active) VALUES (?, ?, ?, ?, ?, ?, 0)',
+        [id, name, nodesStr, connectionsStr, onErrorWorkflowId || null, desc]
       );
     }
 

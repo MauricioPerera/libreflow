@@ -177,7 +177,7 @@ app.get('/api/workflows/:id', async (req, res) => {
 
 app.post('/api/workflows', async (req, res) => {
   try {
-    const { id, name, nodes, connections, onErrorWorkflowId } = req.body;
+    const { id, name, nodes, connections, onErrorWorkflowId, description } = req.body;
     if (!id || !name) {
       return res.status(400).json({ error: 'Workflow id and name are required' });
     }
@@ -192,7 +192,7 @@ app.post('/api/workflows', async (req, res) => {
     const existingWorkflow = await getWorkflowById(id);
     const wasActive = existingWorkflow ? !!existingWorkflow.active : false;
 
-    await saveWorkflow(id, name, nodes || [], connections || [], onErrorWorkflowId);
+    await saveWorkflow(id, name, nodes || [], connections || [], onErrorWorkflowId, description);
 
     if (wasActive) {
       const updatedWorkflow = await getWorkflowById(id);

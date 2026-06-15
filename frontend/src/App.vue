@@ -715,12 +715,19 @@
       <div class="modal-content">
         <h3 class="modal-title">Guardar Flujo</h3>
         <p class="modal-desc">Asigna un nombre para guardar este flujo de trabajo en la base de datos.</p>
-        <input 
-          v-model="newWorkflowName" 
-          type="text" 
-          class="config-input" 
-          placeholder="Nombre del flujo (ej: Mi Flujo De Registro)" 
-          style="margin-bottom: 16px;"
+        <input
+          v-model="newWorkflowName"
+          type="text"
+          class="config-input"
+          placeholder="Nombre del flujo (ej: Mi Flujo De Registro)"
+          style="margin-bottom: 12px;"
+        />
+        <textarea
+          v-model="workflowDescription"
+          class="config-input"
+          rows="2"
+          placeholder="Descripción (opcional) — se usa como descripción de la tool MCP para que un agente la elija mejor"
+          style="margin-bottom: 16px; resize: vertical;"
         />
         <div class="modal-actions">
           <button @click="showSaveModal = false" class="btn btn-secondary">Cancelar</button>
@@ -1071,6 +1078,7 @@ const credKeyIn = ref<'header' | 'query'>('header');
 // Modal states
 const showSaveModal = ref(false);
 const newWorkflowName = ref('');
+const workflowDescription = ref('');
 
 // Closes every modal (used by Escape key and click-on-overlay for accessibility).
 const closeAllModals = () => {
@@ -1292,6 +1300,7 @@ const clearWorkflow = () => {
   nodeStatuses.value = {};
   activeWorkflowId.value = null;
   activeWorkflowName.value = '';
+  workflowDescription.value = '';
   workflowExecutionsList.value = [];
   activeExecutionId.value = null;
   activeTab.value = 'config';
@@ -1359,6 +1368,7 @@ const loadWorkflowForEdit = async (workflowId: string) => {
     
     activeWorkflowId.value = workflow.id;
     activeWorkflowName.value = workflow.name;
+    workflowDescription.value = workflow.description || '';
     isActiveWorkflow.value = workflow.active === 1 || workflow.active === true;
     onErrorWorkflowId.value = workflow.onErrorWorkflowId || '';
     selectedNode.value = null;
@@ -1568,6 +1578,7 @@ const saveWorkflowToDb = async () => {
   const payload = {
     id,
     name,
+    description: workflowDescription.value || null,
     onErrorWorkflowId: onErrorWorkflowId.value || null,
     nodes: nodes.value.map(n => ({
       id: n.id,

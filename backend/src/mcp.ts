@@ -304,7 +304,8 @@ const SYSTEM_TOOLS = [
           description: 'The list of connections between nodes.',
           items: { type: 'object' }
         },
-        onErrorWorkflowId: { type: 'string', description: 'Optional workflow ID to trigger on failure.' }
+        onErrorWorkflowId: { type: 'string', description: 'Optional workflow ID to trigger on failure.' },
+        description: { type: 'string', description: 'Optional human/agent-facing description; becomes the MCP tool description when this workflow is exposed.' }
       },
       required: ['id', 'name', 'nodes', 'connections']
     }
@@ -320,7 +321,8 @@ const SYSTEM_TOOLS = [
           type: 'object',
           description: 'Optional initial payload/variables to inject into the trigger.',
           additionalProperties: true
-        }
+        },
+        concise: { type: 'boolean', description: 'Default true: return only success + succeeded-node outputs. Set false for the full node-by-node report.' }
       },
       required: ['workflowId']
     }
@@ -690,7 +692,7 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
 
         return {
           name: nameMap.get(workflow.id),
-          description: `Ejecuta el flujo LibreFlow: ${workflow.name}`,
+          description: workflow.description || `Ejecuta el flujo LibreFlow: ${workflow.name}`,
           inputSchema
         };
       });
@@ -739,11 +741,11 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
         }
 
         if (toolName === 'libreflow_save_workflow') {
-          const { id: wId, name: wName, nodes = [], connections = [], onErrorWorkflowId } = toolArguments;
+          const { id: wId, name: wName, nodes = [], connections = [], onErrorWorkflowId, description: wDesc } = toolArguments;
           if (!wId || !wName) {
             return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing id or name parameter' } } };
           }
-          await saveWorkflow(wId, wName, nodes, connections, onErrorWorkflowId);
+          await saveWorkflow(wId, wName, nodes, connections, onErrorWorkflowId, wDesc);
           return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Workflow '${wName}' saved successfully.` }] } } };
         }
 
@@ -759,7 +761,21 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
           }
           const { executeWorkflowAndRecord } = await import('./executor.js');
           const report = await executeWorkflowAndRecord(workflow, payload);
-          return dataResult(id, report);
+          // Concise by default: just success + succeeded-node outputs (+ error). The full
+          // node-by-node report is verbose; fetch it with concise:false or get_execution.
+          if (toolArguments.concise === false) {
+            return dataResult(id, report);
+          }
+          const outputs: Record<string, any> = {};
+          for (const r of Object.values(report.nodeResults)) {
+            if (r.status === 'success') outputs[r.nodeName] = r.output;
+          }
+          const concise: any = { success: report.success, durationMs: report.durationMs, outputs };
+          if (!report.success) {
+            const failed = Object.values(report.nodeResults).find(r => r.status === 'failed');
+            concise.error = failed ? { node: failed.nodeName, message: failed.error } : 'unknown error';
+          }
+          return dataResult(id, concise);
         }
 
         if (toolName === 'libreflow_list_executions') {
