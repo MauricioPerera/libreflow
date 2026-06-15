@@ -81,8 +81,70 @@ const triggerNode: LibreFlowNodeDefinition = {
         { label: 'Manual (Ejecución directa)', value: 'manual' },
         { label: 'Webhook (URL Externa)', value: 'webhook' },
         { label: 'Cron (Programado)', value: 'cron' },
-        { label: 'Tabla de Datos (Reactivo)', value: 'dataTable' }
+        { label: 'Tabla de Datos (Reactivo)', value: 'dataTable' },
+        { label: 'Streaming (SSE / WebSocket / MQTT / IMAP)', value: 'stream' }
       ]
+    },
+    {
+      name: 'streamTransport',
+      label: 'Transporte de streaming',
+      type: 'options',
+      default: 'sse',
+      options: [
+        { label: 'SSE (Server-Sent Events)', value: 'sse' },
+        { label: 'WebSocket', value: 'websocket' },
+        { label: 'MQTT', value: 'mqtt' },
+        { label: 'IMAP (correo entrante)', value: 'imap' }
+      ]
+    },
+    {
+      name: 'streamUrl',
+      label: 'URL (SSE / WebSocket / MQTT)',
+      type: 'string',
+      default: '',
+      placeholder: 'https://… , wss://… , mqtt://broker:1883'
+    },
+    {
+      name: 'mqttTopic',
+      label: 'Topic MQTT',
+      type: 'string',
+      default: '',
+      placeholder: 'sensores/temperatura'
+    },
+    {
+      name: 'imapHost',
+      label: 'IMAP: host',
+      type: 'string',
+      default: '',
+      placeholder: 'imap.gmail.com'
+    },
+    {
+      name: 'imapPort',
+      label: 'IMAP: puerto',
+      type: 'string',
+      default: '993',
+      placeholder: '993'
+    },
+    {
+      name: 'imapMailbox',
+      label: 'IMAP: buzón',
+      type: 'string',
+      default: 'INBOX',
+      placeholder: 'INBOX'
+    },
+    {
+      name: 'imapSecure',
+      label: 'IMAP: TLS',
+      type: 'boolean',
+      default: true
+    },
+    {
+      name: 'credentialId',
+      label: 'Credencial (auth del stream)',
+      type: 'options',
+      default: '',
+      options: [],
+      description: 'SSE/WS: cabecera de auth. MQTT/IMAP: usuario/contraseña (credencial basicAuth).'
     },
     {
       name: 'tableId',

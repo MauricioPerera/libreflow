@@ -16,6 +16,8 @@ with an Express + SQLite backend and a Vue 3 + Vue Flow frontend.
 - **Data-table state engine** — unique-key idempotency, atomic `upsert` / `increment` /
   get-or-default, rich queries (operators + sort + limit), and **reactive triggers** (run a
   flow on row insert/update).
+- **Streaming triggers** — persistent long-running connections (SSE, WebSocket, MQTT, IMAP)
+  that fire a flow per inbound message, with automatic exponential-backoff reconnect.
 
 ## Stack
 
