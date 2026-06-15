@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { WorkflowEngine, WorkflowExecutionReport } from './engine.js';
 import { getWorkflowById, saveExecution, pruneOldExecutions } from './db.js';
 
@@ -8,6 +9,15 @@ export interface ExecuteOptions {
 // Per-workflow serialization: chains executions of the same workflow id so concurrent
 // triggers (webhook/cron/manual) don't overlap and clobber shared state. (DATA-15)
 const workflowLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Set of workflow ids currently executing in this async context. Lets us detect a
+ * RE-ENTRANT call to a workflow already running in the same chain — e.g. an aiAgent whose
+ * MCP toolset includes its own workflow, which would otherwise await its own per-id lock
+ * and deadlock. Reactive triggers run detached (see triggerManager) so legitimate
+ * self-feeding cascades are unaffected (they're bounded by the trigger depth guard).
+ */
+export const execStack = new AsyncLocalStorage<Set<string>>();
 
 // Prune old executions only every Nth run per workflow instead of on every execution
 // (the prune DELETE is comparatively expensive). Retention overshoots by at most N rows.
@@ -25,9 +35,17 @@ export async function executeWorkflowAndRecord(
   }
 
   const id: string = workflow.id;
+  const stack = execStack.getStore();
+  if (stack?.has(id)) {
+    throw new Error(`Re-entrant execution of workflow "${id}" detected (a tool or sub-flow tried to run the workflow that is already running). Aborted to avoid a deadlock.`);
+  }
   const prev = workflowLocks.get(id) || Promise.resolve();
   // Wait for any in-flight run of this id, then run. (errors don't break the chain)
-  const run = prev.catch(() => {}).then(() => runWorkflowAndRecord(workflow, payload, options));
+  const run = prev.catch(() => {}).then(() => {
+    const nextStack = new Set(stack);
+    nextStack.add(id);
+    return execStack.run(nextStack, () => runWorkflowAndRecord(workflow, payload, options));
+  });
   workflowLocks.set(id, run.catch(() => {}));
   return run;
 }

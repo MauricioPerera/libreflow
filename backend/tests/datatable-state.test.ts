@@ -4,7 +4,9 @@ import {
   saveDataTable,
   deleteDataTable,
   addDataTableRow,
+  addDataTableRows,
   getDataTableRows,
+  countDataTableRows,
   upsertDataTableRow,
   incrementDataTableRow,
   getOrCreateDataTableRow,
@@ -51,6 +53,15 @@ describe('Data table state engine (key + atomic ops + idempotency)', () => {
     await Promise.all(Array.from({ length: 20 }, () => incrementDataTableRow(tableId, 'concurrent', 'count', 1)));
     const rows = await getDataTableRows(tableId);
     expect(rows.find(r => r.data.email === 'concurrent')!.data.count).toBe(20);
+  });
+
+  it('addDataTableRows es atómico: una clave duplicada revierte todo el batch', async () => {
+    const before = await countDataTableRows(tableId);
+    await expect(
+      addDataTableRows(tableId, [{ email: 'batch-ok@x.com' }, { email: 'a@x.com' }]) // a@x.com ya existe
+    ).rejects.toThrow(/Duplicate key/i);
+    const after = await countDataTableRows(tableId);
+    expect(after).toBe(before); // ninguna fila del batch quedó insertada
   });
 
   it('getOrCreate devuelve la fila o la crea desde defaults', async () => {

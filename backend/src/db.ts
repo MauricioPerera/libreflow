@@ -476,6 +476,36 @@ export async function addDataTableRow(tableId: string, rowId: string, data: Reco
 }
 
 /**
+ * Inserts many rows in a single transaction (all-or-nothing). If any row fails (e.g. a
+ * duplicate key on a keyed table) the whole batch rolls back, so callers never get a
+ * partial insert. Events are emitted only after a successful commit.
+ */
+export async function addDataTableRows(tableId: string, rowsData: Record<string, any>[]) {
+  const keyColumn = await getTableKeyColumn(tableId);
+  const inserted: { id: string; data: Record<string, any> }[] = [];
+  await db.run('BEGIN');
+  try {
+    for (const data of rowsData || []) {
+      const rowId = `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      await db.run(
+        'INSERT INTO data_table_rows (id, table_id, row_key, data) VALUES (?, ?, ?, ?)',
+        [rowId, tableId, computeRowKey(keyColumn, data), JSON.stringify(data)]
+      );
+      inserted.push({ id: rowId, data });
+    }
+    await db.run('COMMIT');
+  } catch (err: any) {
+    await db.run('ROLLBACK');
+    if (/UNIQUE constraint/i.test(err?.message || '')) {
+      throw new Error('Duplicate key in batch — no rows were inserted (the whole batch was rolled back).');
+    }
+    throw err;
+  }
+  for (const r of inserted) emitRowEvent(tableId, r.id, 'insert', r.data);
+  return inserted.map(r => r.id);
+}
+
+/**
  * Atomically inserts or updates a row by the table's key column (ON CONFLICT). Requires
  * the table to declare a key column. This is the idempotency / state-write primitive.
  */

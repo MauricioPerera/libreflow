@@ -10,6 +10,7 @@ import {
   saveDataTable,
   getDataTableRows,
   addDataTableRow,
+  addDataTableRows,
   getWorkflowsByIds,
   getMcpServerById,
   deleteWorkflow,
@@ -876,13 +877,8 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
           if (!tId || !Array.isArray(rows)) {
             return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId or invalid rows parameter' } } };
           }
-          const addedIds: string[] = [];
-          for (const rowData of rows) {
-            const rowId = `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-            await addDataTableRow(tId, rowId, rowData);
-            addedIds.push(rowId);
-          }
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Successfully added ${rows.length} rows. IDs: ${addedIds.join(', ')}` }] } } };
+          const addedIds = await addDataTableRows(tId, rows);
+          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Successfully added ${addedIds.length} rows. IDs: ${addedIds.join(', ')}` }] } } };
         }
 
         if (toolName === 'libreflow_delete_workflow') {

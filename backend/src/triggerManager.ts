@@ -1,6 +1,6 @@
 import { schedule, validate, ScheduledTask } from 'node-cron';
 import { getActiveWorkflows, getWorkflowById } from './db.js';
-import { executeWorkflowAndRecord } from './executor.js';
+import { executeWorkflowAndRecord, execStack } from './executor.js';
 import { cronTooFrequent } from './security.js';
 import { dataTableBus, triggerContext, RowEvent, subscribedTables } from './dataTableEvents.js';
 
@@ -51,8 +51,11 @@ class TriggerManager {
             row: evt.data,
             timestamp: new Date().toISOString(),
           };
-          // Run one trigger-hop deeper so the cascade guard can cap the chain.
-          await triggerContext.run({ depth: evt.depth + 1 }, () => executeWorkflowAndRecord(workflow, payload));
+          // Run detached (fresh execStack — a reactive run is a new root, not nested) and
+          // one trigger-hop deeper so the cascade depth guard can cap the chain.
+          await execStack.run(new Set(), () =>
+            triggerContext.run({ depth: evt.depth + 1 }, () => executeWorkflowAndRecord(workflow, payload))
+          );
         } catch (err) {
           console.error(`[DataTableTrigger] Error running workflow ${sub.workflowId} for table ${evt.tableId}:`, err);
         }
