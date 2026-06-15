@@ -95,8 +95,10 @@ Workflow shape: `nodes[] = {id,type,name,parameters}`, `connections[] =
 
 ## Security notes
 
-- `jsCode` runs arbitrary code with full host access — disabled by default in production
-  (`LF_ENABLE_JS_CODE=true` to opt in on a trusted instance).
+- `jsCode` runs user code in an **isolated-vm** sandbox (V8 with no host bindings — no
+  `require`/`process`/`fs`/network), with bounded memory and time. Safe in production; no
+  opt-in flag. Tune limits with `LF_JS_TIMEOUT_MS` (default 5000) and `LF_JS_MEMORY_MB`
+  (default 128).
 - Outbound requests (httpRequest / MCP / aiAgent LLM) are SSRF-guarded; private IPs blocked
   in production.
 - Credentials are encrypted at rest (AES-256-GCM); the API never returns decrypted secrets.
