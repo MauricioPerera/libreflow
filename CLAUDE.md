@@ -31,22 +31,48 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   NEVER mutates the shared node object (keeps re-runs deterministic). Prototype-pollution
   keys are blocked in path traversal.
 - **registry.ts** — node definitions (trigger, set, httpRequest, jsCode, if, log, merge,
-  executeWorkflow, loop, mcpToolCall, dataTable). `NodeRegistry` is the single source of node types.
+  executeWorkflow, loop, mcpToolCall, dataTable, **aiAgent**). `NodeRegistry` is the single
+  source of node types. `aiAgent` is an LLM tool-calling loop (OpenAI-compatible endpoint)
+  whose toolset is an MCP server — own (in-process) or external (SDK client). Shared
+  credential→auth helper (`resolveCredentialAuth`) used by httpRequest / mcpToolCall / aiAgent.
 - **executor.ts** — `executeWorkflowAndRecord`: persists a `running` record, runs, saves the
-  final report, triggers the error-workflow, prunes old executions. Serializes concurrent
-  runs of the same workflow id (per-id promise chain).
-- **db.ts** — SQLite access. `PRAGMA foreign_keys = ON`; `saveWorkflow` + version are atomic
-  (BEGIN/COMMIT); indexes on hot columns; idempotent column migrations.
-- **server.ts** — Express API. `requireAuth` on `/api`, HMAC on `/hooks/:id`, rate limiting,
-  generic 500s (real error logged, masked to client) via `serverError`.
-- **auth.ts / security.ts** — API key + webhook HMAC; SSRF guard (`assertSafeUrl`),
-  `isUnsafeKey`, `rateLimit`, `cronTooFrequent`.
-- **mcp.ts** — MCP server (expose workflows as tools) + client (`mcpToolCall`).
+  final report, triggers the error-workflow, prunes old executions (throttled, every Nth run).
+  Serializes concurrent runs of the same workflow id (per-id promise chain), and exports an
+  `execStack` (`AsyncLocalStorage`) re-entrancy guard that aborts a workflow trying to run
+  itself (e.g. an agent whose toolset includes its own flow) instead of deadlocking.
+- **db.ts** — SQLite access. `PRAGMA foreign_keys = ON`, `busy_timeout`, `journal_mode = WAL`;
+  `saveWorkflow` + version are atomic (BEGIN/COMMIT); indexes on hot columns; idempotent column
+  migrations. Tables: workflows, executions, credentials, workflow_versions, data_tables,
+  data_table_rows, **mcp_servers**. **Data-table state engine**: optional unique key column
+  (`key_column` + derived `row_key`) enabling atomic `upsert` / `increment` / get-or-default,
+  rich `queryDataTableRows` (operators eq/ne/gt/lt/gte/lte/contains/in via `json_extract`),
+  and a transactional batch insert (`addDataTableRows`).
+- **dataTableEvents.ts** — reactive data-table triggers: a decoupled event bus (db.ts emits,
+  triggerManager subscribes — so db never imports the executor) plus an `AsyncLocalStorage`
+  trigger-depth guard that caps self-feeding cascades (`MAX_TRIGGER_DEPTH`).
+- **triggerManager.ts** — registers active workflows' background triggers: `cron` (node-cron)
+  and `dataTable` (subscribes to row insert/update; dispatches the flow fire-and-forget,
+  detached from `execStack`).
+- **server.ts** — Express API. `requireAuth` on `/api`, HMAC on `/hooks/:id`, gzip compression
+  (SSE excluded), rate limiting, generic 500s (real error logged, masked to client) via
+  `serverError`. Mounts the public named-MCP-server router at `/mcp` (outside `/api` auth).
+- **auth.ts / security.ts** — API key + webhook HMAC; `constantTimeEqual` (per-MCP-server token);
+  SSRF guard (`assertSafeUrl`), `isUnsafeKey`, `rateLimit`, `cronTooFrequent`.
+- **mcp.ts** — MCP server **and** client, via the official SDK (`@modelcontextprotocol/sdk`).
+  `dispatchMcpRpc(body, scope)` is the single JSON-RPC source of truth (scope = which
+  workflows + whether the `libreflow_*` system tools are exposed). Transports: **Streamable
+  HTTP** (current spec) at `POST /api/mcp` (global) and `POST /mcp/:serverId` (named servers);
+  legacy SSE kept for back-compat. **Named MCP servers** expose a curated workflow group as
+  tools at their own token-protected URL. Client (`fetchToolsFromMcpServer` /
+  `executeMcpToolCall` / `openMcpClientSession`) consumes Streamable HTTP or SSE. Tools return
+  compact JSON + `structuredContent` + annotations, with default row limits (agent-first).
 
 ### Frontend (`frontend/src/`)
-- **App.vue** — the whole UI (dashboard + node-canvas editor). Calls the backend via `/api`
-  (Vite proxy). `apiGetJson` checks `res.ok`; `applyExecutionResults` is the shared
-  node/edge status-styling helper. Unsaved-changes are tracked via `isDirty` (+ beforeunload).
+- **App.vue** — the whole UI (dashboard + node-canvas editor). Dashboard subviews: Flujos,
+  Ejecuciones, Credenciales, Tablas de Datos, **Servidores MCP** (CRUD a named server's
+  workflow group + token + URL). Calls the backend via `/api` (Vite proxy). `apiGetJson`
+  checks `res.ok`; `applyExecutionResults` is the shared node/edge status-styling helper.
+  Unsaved-changes are tracked via `isDirty` (+ beforeunload).
 - **components/** — `CustomNode`, `NodeConfigPanel` (param form, inline JSON/cron validation),
   `ExpressionEditor`, `JsonTreeItem`.
 - **focusTrap.ts** — global `v-focus-trap` directive for modals (Esc + click-outside + ARIA
