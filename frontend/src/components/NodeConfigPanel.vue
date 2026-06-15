@@ -495,6 +495,9 @@ const getParamOptions = (param: NodeParameterSchema) => {
   if ((props.node?.type === 'dataTable' || props.node?.type === 'trigger') && param.name === 'tableId') {
     return dynamicOptions.value['tableId'] || [];
   }
+  if (props.node?.type === 'aiAgent' && param.name === 'mcpServerId') {
+    return dynamicOptions.value['mcpServerId'] || [];
+  }
   return param.options || [];
 };
 
@@ -575,9 +578,26 @@ const fetchDataTablesForDropdown = async () => {
   }
 };
 
+const fetchMcpServersForDropdown = async () => {
+  try {
+    const res = await fetch('/api/mcp-servers');
+    const list = res.ok ? await res.json() : [];
+    dynamicOptions.value['mcpServerId'] = [
+      { label: 'Sin herramientas (solo LLM)', value: '' },
+      ...list.map((s: any) => ({ label: `🔌 ${s.name} (${(s.workflow_ids || []).length} flujos)`, value: s.id })),
+    ];
+  } catch (err) {
+    console.error('Error fetching MCP servers for dropdown:', err);
+    dynamicOptions.value['mcpServerId'] = [{ label: 'Sin herramientas (solo LLM)', value: '' }];
+  }
+};
+
 watch(() => props.node?.id, () => {
   if (props.node?.type === 'dataTable' || props.node?.type === 'trigger') {
     fetchDataTablesForDropdown();
+  }
+  if (props.node?.type === 'aiAgent') {
+    fetchMcpServersForDropdown();
   }
 }, { immediate: true });
 

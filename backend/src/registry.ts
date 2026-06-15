@@ -1004,6 +1004,188 @@ const dataTableNode: LibreFlowNodeDefinition = {
   }
 };
 
+const aiAgentNode: LibreFlowNodeDefinition = {
+  type: 'aiAgent',
+  displayName: 'Agente IA',
+  category: 'AI',
+  icon: '🤖',
+  description: 'Agente LLM que usa un servidor MCP como herramientas (bucle de tool-calling)',
+  ui: {
+    subtitle: 'Agente con herramientas',
+    inputs: [{ id: 'main' }],
+    outputs: [{ id: 'main' }],
+    gradient: 'linear-gradient(135deg, hsl(265, 85%, 60%), hsl(220, 85%, 55%))'
+  },
+  parameters: [
+    {
+      name: 'endpoint',
+      label: 'Endpoint (OpenAI-compatible)',
+      type: 'string',
+      default: 'http://localhost:1234/v1',
+      placeholder: 'http://localhost:1234/v1 (LM Studio), https://api.openai.com/v1, …'
+    },
+    {
+      name: 'model',
+      label: 'Modelo',
+      type: 'string',
+      default: '',
+      placeholder: 'p.ej. qwen/qwen3-4b-2507 o gpt-4o-mini'
+    },
+    {
+      name: 'authentication',
+      label: 'Autenticación',
+      type: 'options',
+      default: 'none',
+      options: [
+        { label: 'Ninguna (LM Studio local)', value: 'none' },
+        { label: 'Credencial (API Key)', value: 'genericCredential' }
+      ]
+    },
+    {
+      name: 'credentialId',
+      label: 'Credencial del LLM',
+      type: 'options',
+      default: ''
+    },
+    {
+      name: 'systemPrompt',
+      label: 'System Prompt',
+      type: 'code',
+      default: 'Eres un asistente que cumple la tarea del usuario usando las herramientas disponibles. Responde de forma breve cuando termines.'
+    },
+    {
+      name: 'userMessage',
+      label: 'Mensaje / Tarea',
+      type: 'string',
+      default: '',
+      placeholder: 'La tarea para el agente (admite expresiones {{ $node.X.output... }})'
+    },
+    {
+      name: 'mcpServerId',
+      label: 'Servidor MCP (herramientas)',
+      type: 'options',
+      default: '',
+      options: []
+    },
+    {
+      name: 'maxIterations',
+      label: 'Máx. iteraciones',
+      type: 'string',
+      default: '5'
+    },
+    {
+      name: 'temperature',
+      label: 'Temperatura',
+      type: 'string',
+      default: '0'
+    }
+  ],
+  execute: async (params) => {
+    const {
+      endpoint = 'http://localhost:1234/v1',
+      model,
+      authentication = 'none',
+      credentialId,
+      systemPrompt,
+      userMessage,
+      mcpServerId,
+      maxIterations = '5',
+      temperature = '0'
+    } = params;
+
+    if (!model) throw new Error('AI Agent error: model is required');
+    if (!userMessage) throw new Error('AI Agent error: userMessage is required');
+
+    // SSRF guard on the LLM endpoint (private IPs blocked in production, allowed in dev).
+    await assertSafeUrl(endpoint);
+
+    // LLM auth from the encrypted credentials vault (same scheme as httpRequest).
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authentication === 'genericCredential' && credentialId) {
+      const cred = await getCredentialById(credentialId);
+      if (cred && cred.data) {
+        if (cred.type === 'apiKey') {
+          const { name = '', value = '' } = cred.data;
+          if (name && value) headers[name] = value;
+        } else if (cred.type === 'basicAuth') {
+          const { user = '', password = '' } = cred.data;
+          headers['Authorization'] = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
+        }
+      }
+    }
+
+    // Toolset: a named MCP server, called IN-PROCESS via dispatchMcpRpc (no HTTP, no auth).
+    const { dispatchMcpRpc } = await import('./mcp.js');
+    let scope: any = null;
+    let openaiTools: any[] = [];
+    if (mcpServerId) {
+      const { getMcpServerById } = await import('./db.js');
+      const server = await getMcpServerById(mcpServerId);
+      if (!server) throw new Error(`AI Agent error: MCP server "${mcpServerId}" not found`);
+      scope = { workflowIds: server.workflow_ids, exposeSystemTools: server.expose_system_tools };
+      const listed = await dispatchMcpRpc({ jsonrpc: '2.0', id: 0, method: 'tools/list' }, scope);
+      const tools = listed.payload?.result?.tools || [];
+      openaiTools = tools.map((t: any) => ({
+        type: 'function',
+        function: { name: t.name, description: t.description, parameters: t.inputSchema || { type: 'object', properties: {} } }
+      }));
+    }
+
+    const messages: any[] = [];
+    if (systemPrompt) messages.push({ role: 'system', content: String(systemPrompt) });
+    messages.push({ role: 'user', content: String(userMessage) });
+
+    const maxIter = Math.max(1, Math.min(20, Number(maxIterations) || 5));
+    const temp = Number(temperature);
+    const trace: any[] = [];
+    let answer = '';
+    let hitCap = true;
+
+    const chatUrl = `${endpoint.replace(/\/$/, '')}/chat/completions`;
+
+    for (let i = 0; i < maxIter; i++) {
+      const body: any = { model, messages, temperature: isNaN(temp) ? 0 : temp, stream: false };
+      if (openaiTools.length) { body.tools = openaiTools; body.tool_choice = 'auto'; }
+
+      const res = await fetch(chatUrl, { method: 'POST', headers, body: JSON.stringify(body) });
+      if (!res.ok) {
+        const t = await res.text();
+        throw new Error(`AI Agent LLM error: HTTP ${res.status} ${t.slice(0, 200)}`);
+      }
+      const data = await res.json();
+      const msg = data.choices?.[0]?.message;
+      if (!msg) throw new Error('AI Agent error: no message in LLM response');
+
+      if (!msg.tool_calls || msg.tool_calls.length === 0) {
+        answer = msg.content || '';
+        hitCap = false;
+        break;
+      }
+
+      messages.push(msg);
+      for (const tc of msg.tool_calls) {
+        let args: any = {};
+        try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* leave empty */ }
+        let resultText = '';
+        try {
+          const r = await dispatchMcpRpc(
+            { jsonrpc: '2.0', id: 0, method: 'tools/call', params: { name: tc.function.name, arguments: args } },
+            scope
+          );
+          if (r.payload?.error) resultText = 'error: ' + r.payload.error.message;
+          else resultText = r.payload?.result?.content?.[0]?.text ?? JSON.stringify(r.payload?.result ?? {});
+        } catch (e: any) {
+          resultText = 'error: ' + e.message;
+        }
+        trace.push({ tool: tc.function.name, arguments: args, result: resultText.slice(0, 2000) });
+        messages.push({ role: 'tool', tool_call_id: tc.id, content: String(resultText).slice(0, 4000) });
+      }
+    }
+
+    return { answer, iterations: trace.length, hitMaxIterations: hitCap && trace.length > 0, toolCalls: trace };
+  }
+};
+
 class NodeRegistryClass {
   private registry = new Map<string, LibreFlowNodeDefinition>();
 
@@ -1019,6 +1201,7 @@ class NodeRegistryClass {
     this.register(loopNode);
     this.register(mcpToolCallNode);
     this.register(dataTableNode);
+    this.register(aiAgentNode);
   }
 
   register(node: LibreFlowNodeDefinition) {
