@@ -4,12 +4,14 @@ import { getCredentialById, getWorkflowById } from './db.js';
 import ivm from 'isolated-vm';
 import { executeMcpToolCall } from './mcp.js';
 import { assertSafeUrl, isUnsafeKey } from './security.js';
+import { getOAuth2AccessToken } from './oauth2.js';
 
 /**
  * Loads a stored credential and returns the auth to apply: headers to merge and query
  * params to append. Single source of truth for the credential→auth scheme (basicAuth →
- * Authorization: Basic; apiKey → custom header or query param), shared by httpRequest,
- * mcpToolCall and aiAgent.
+ * Authorization: Basic; apiKey → custom header or query param; oauth2 → Authorization:
+ * Bearer con token obtenido/renovado automáticamente), shared by httpRequest, mcpToolCall
+ * and aiAgent.
  */
 export async function resolveCredentialAuth(credentialId?: string): Promise<{ headers: Record<string, string>; query: Record<string, string> }> {
   const headers: Record<string, string> = {};
@@ -29,6 +31,12 @@ export async function resolveCredentialAuth(credentialId?: string): Promise<{ he
       if (keyIn === 'query') query[name] = value;
       else headers[name] = value;
     }
+  } else if (cred.type === 'oauth2') {
+    // Obtiene (o renueva) el access token. A diferencia de los otros esquemas, aquí un
+    // fallo es duro: sin token la petición iría sin auth y fallaría con 401, así que
+    // propagamos el error para que el nodo falle con un mensaje claro.
+    const token = await getOAuth2AccessToken(cred);
+    headers['Authorization'] = 'Bearer ' + token;
   }
   return { headers, query };
 }

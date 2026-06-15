@@ -131,7 +131,7 @@
                 </td>
                 <td>
                   <span class="status-badge" style="background: hsla(var(--color-primary) / 0.12); color: hsl(var(--color-primary-text));">
-                    {{ cred.type === 'basicAuth' ? 'Basic Auth (Usuario/Contraseña)' : 'API Key (Token de Cabecera/Query)' }}
+                    {{ cred.type === 'basicAuth' ? 'Basic Auth (Usuario/Contraseña)' : cred.type === 'oauth2' ? 'OAuth2 (token + refresh)' : 'API Key (Token de Cabecera/Query)' }}
                   </span>
                 </td>
                 <td>{{ formatFullDate(cred.created_at) }}</td>
@@ -757,6 +757,7 @@
           <select v-model="credentialType" class="config-input" :disabled="!!editingCredentialId">
             <option value="basicAuth">Basic Auth (Usuario / Contraseña)</option>
             <option value="apiKey">API Key (Token de Cabecera o Query)</option>
+            <option value="oauth2">OAuth2 (token + refresh automático)</option>
           </select>
         </div>
 
@@ -811,12 +812,50 @@
           </div>
         </div>
 
+        <!-- Inputs for oauth2 -->
+        <div v-else-if="credentialType === 'oauth2'">
+          <div class="config-group">
+            <label class="config-label">TIPO DE GRANT</label>
+            <select v-model="oauthGrantType" class="config-input">
+              <option value="client_credentials">Client Credentials (machine-to-machine)</option>
+              <option value="refresh_token">Refresh Token</option>
+            </select>
+          </div>
+          <div class="config-group">
+            <label class="config-label">TOKEN URL</label>
+            <input v-model="oauthTokenUrl" type="text" class="config-input" placeholder="https://auth.ejemplo.com/oauth/token" />
+          </div>
+          <div class="config-group">
+            <label class="config-label">CLIENT ID</label>
+            <input v-model="oauthClientId" type="text" class="config-input" placeholder="ID de cliente" />
+          </div>
+          <div class="config-group">
+            <label class="config-label">CLIENT SECRET</label>
+            <input v-model="oauthClientSecret" type="password" class="config-input" placeholder="Secreto de cliente" />
+          </div>
+          <div class="config-group" v-if="oauthGrantType === 'refresh_token'">
+            <label class="config-label">REFRESH TOKEN</label>
+            <input v-model="oauthRefreshToken" type="password" class="config-input" placeholder="Refresh token inicial" />
+          </div>
+          <div class="config-group">
+            <label class="config-label">SCOPE (opcional)</label>
+            <input v-model="oauthScope" type="text" class="config-input" placeholder="ej: read write" />
+          </div>
+          <div class="config-group">
+            <label class="config-label">AUTENTICACIÓN DEL CLIENTE</label>
+            <select v-model="oauthClientAuth" class="config-input">
+              <option value="header">Cabecera HTTP Basic (recomendado)</option>
+              <option value="body">En el cuerpo (client_id / client_secret)</option>
+            </select>
+          </div>
+        </div>
+
         <div class="modal-actions" style="margin-top: 24px;">
           <button @click="showCredentialModal = false" class="btn btn-secondary">Cancelar</button>
-          <button 
-            @click="saveCredentialToDb" 
-            class="btn btn-primary" 
-            :disabled="!credentialName.trim() || (credentialType === 'basicAuth' ? (!credUser.trim() || !credPassword.trim()) : (!credKeyName.trim() || !credKeyValue.trim()))"
+          <button
+            @click="saveCredentialToDb"
+            class="btn btn-primary"
+            :disabled="!canSaveCredential"
           >
             Guardar
           </button>
@@ -1068,12 +1107,33 @@ const credentialsList = ref<any[]>([]);
 const showCredentialModal = ref(false);
 const editingCredentialId = ref<string | null>(null);
 const credentialName = ref('');
-const credentialType = ref<'basicAuth' | 'apiKey'>('basicAuth');
+const credentialType = ref<'basicAuth' | 'apiKey' | 'oauth2'>('basicAuth');
 const credUser = ref('');
 const credPassword = ref('');
 const credKeyName = ref('');
 const credKeyValue = ref('');
 const credKeyIn = ref<'header' | 'query'>('header');
+// OAuth2 (server-to-server)
+const oauthGrantType = ref<'client_credentials' | 'refresh_token'>('client_credentials');
+const oauthTokenUrl = ref('');
+const oauthClientId = ref('');
+const oauthClientSecret = ref('');
+const oauthRefreshToken = ref('');
+const oauthScope = ref('');
+const oauthClientAuth = ref<'header' | 'body'>('header');
+
+// Validación del formulario de credencial según su tipo.
+const canSaveCredential = computed(() => {
+  if (!credentialName.value.trim()) return false;
+  if (credentialType.value === 'basicAuth') return !!credUser.value.trim() && !!credPassword.value.trim();
+  if (credentialType.value === 'apiKey') return !!credKeyName.value.trim() && !!credKeyValue.value.trim();
+  if (credentialType.value === 'oauth2') {
+    if (!oauthTokenUrl.value.trim() || !oauthClientId.value.trim()) return false;
+    if (oauthGrantType.value === 'refresh_token' && !oauthRefreshToken.value.trim()) return false;
+    return true;
+  }
+  return false;
+});
 
 // Modal states
 const showSaveModal = ref(false);
@@ -1478,6 +1538,13 @@ const openCreateCredentialModal = () => {
   credKeyName.value = '';
   credKeyValue.value = '';
   credKeyIn.value = 'header';
+  oauthGrantType.value = 'client_credentials';
+  oauthTokenUrl.value = '';
+  oauthClientId.value = '';
+  oauthClientSecret.value = '';
+  oauthRefreshToken.value = '';
+  oauthScope.value = '';
+  oauthClientAuth.value = 'header';
   showCredentialModal.value = true;
 };
 
@@ -1490,18 +1557,24 @@ const openEditCredentialModal = async (id: string) => {
       credentialName.value = cred.name;
       credentialType.value = cred.type;
       
+      // El endpoint GET no devuelve el material secreto descifrado (solo metadatos), así
+      // que los campos sensibles llegan vacíos y se vuelven a introducir al editar.
+      const data = cred.data || {};
       if (cred.type === 'basicAuth') {
-        credUser.value = cred.data.user || '';
-        credPassword.value = cred.data.password || '';
-        credKeyName.value = '';
-        credKeyValue.value = '';
-        credKeyIn.value = 'header';
+        credUser.value = data.user || '';
+        credPassword.value = data.password || '';
       } else if (cred.type === 'apiKey') {
-        credUser.value = '';
-        credPassword.value = '';
-        credKeyName.value = cred.data.name || '';
-        credKeyValue.value = cred.data.value || '';
-        credKeyIn.value = cred.data.in || 'header';
+        credKeyName.value = data.name || '';
+        credKeyValue.value = data.value || '';
+        credKeyIn.value = data.in || 'header';
+      } else if (cred.type === 'oauth2') {
+        oauthGrantType.value = data.grantType || 'client_credentials';
+        oauthTokenUrl.value = data.tokenUrl || '';
+        oauthClientId.value = data.clientId || '';
+        oauthClientSecret.value = data.clientSecret || '';
+        oauthRefreshToken.value = data.refreshToken || '';
+        oauthScope.value = data.scope || '';
+        oauthClientAuth.value = data.clientAuth || 'header';
       }
       showCredentialModal.value = true;
     }
@@ -1521,6 +1594,14 @@ const saveCredentialToDb = async () => {
     data.name = credKeyName.value;
     data.value = credKeyValue.value;
     data.in = credKeyIn.value;
+  } else if (credentialType.value === 'oauth2') {
+    data.grantType = oauthGrantType.value;
+    data.tokenUrl = oauthTokenUrl.value.trim();
+    data.clientId = oauthClientId.value;
+    data.clientSecret = oauthClientSecret.value;
+    data.clientAuth = oauthClientAuth.value;
+    if (oauthScope.value.trim()) data.scope = oauthScope.value.trim();
+    if (oauthGrantType.value === 'refresh_token') data.refreshToken = oauthRefreshToken.value;
   }
 
   const payload = {

@@ -34,7 +34,9 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   executeWorkflow, loop, mcpToolCall, dataTable, **aiAgent**). `NodeRegistry` is the single
   source of node types. `aiAgent` is an LLM tool-calling loop (OpenAI-compatible endpoint)
   whose toolset is an MCP server — own (in-process) or external (SDK client). Shared
-  credential→auth helper (`resolveCredentialAuth`) used by httpRequest / mcpToolCall / aiAgent.
+  credential→auth helper (`resolveCredentialAuth`) used by httpRequest / mcpToolCall / aiAgent;
+  schemes: basicAuth, apiKey, and **oauth2** (`oauth2.ts`: server-to-server client_credentials /
+  refresh_token, auto token fetch/refresh, in-memory + encrypted-credential token cache).
 - **executor.ts** — `executeWorkflowAndRecord`: persists a `running` record, runs, saves the
   final report, triggers the error-workflow, prunes old executions (throttled, every Nth run).
   Serializes concurrent runs of the same workflow id (per-id promise chain), and exports an
