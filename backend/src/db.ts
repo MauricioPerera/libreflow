@@ -124,6 +124,20 @@ export async function initDatabase() {
   await addColumnIfMissing('data_tables', 'key_column', 'TEXT');
   await addColumnIfMissing('data_table_rows', 'row_key', 'TEXT');
 
+  // Suspended workflow runs awaiting an external resume (the `wait` node). `state` holds
+  // the workflow snapshot + prior node results + initial payload to continue from.
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS pending_resumes (
+      token TEXT PRIMARY KEY,
+      workflow_id TEXT,
+      execution_id TEXT,
+      wait_node_id TEXT,
+      state TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME
+    );
+  `);
+
   // Indexes for the hot filter/sort columns (avoid full table scans as data grows).
   await db.exec('CREATE INDEX IF NOT EXISTS idx_executions_wf ON executions(workflow_id, executed_at)');
   await db.exec('CREATE INDEX IF NOT EXISTS idx_versions_wf ON workflow_versions(workflow_id, version)');
@@ -671,6 +685,27 @@ export async function updateDataTableRow(rowId: string, data: Record<string, any
 
 export async function deleteDataTableRow(rowId: string) {
   await db.run('DELETE FROM data_table_rows WHERE id = ?', [rowId]);
+}
+
+// --- PENDING RESUMES (suspended `wait` runs) ---
+export async function savePendingResume(
+  token: string, workflowId: string | null, executionId: string,
+  waitNodeId: string, state: any, expiresAt?: string | null
+) {
+  await db.run(
+    'INSERT OR REPLACE INTO pending_resumes (token, workflow_id, execution_id, wait_node_id, state, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [token, workflowId, executionId, waitNodeId, JSON.stringify(state), expiresAt || null]
+  );
+}
+
+export async function getPendingResume(token: string) {
+  const row = await db.get('SELECT * FROM pending_resumes WHERE token = ?', [token]);
+  if (row) row.state = JSON.parse(row.state);
+  return row;
+}
+
+export async function deletePendingResume(token: string) {
+  await db.run('DELETE FROM pending_resumes WHERE token = ?', [token]);
 }
 
 // --- MCP SERVERS CRUD METHODS ---

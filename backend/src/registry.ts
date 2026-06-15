@@ -1,4 +1,5 @@
 import { LibreFlowNodeDefinition } from './sdk.js';
+import { WorkflowSuspendError } from './engine.js';
 import { getCredentialById, getWorkflowById } from './db.js';
 import { Worker } from 'worker_threads';
 import { executeMcpToolCall } from './mcp.js';
@@ -1251,6 +1252,34 @@ const aiAgentNode: LibreFlowNodeDefinition = {
   }
 };
 
+const waitNode: LibreFlowNodeDefinition = {
+  type: 'wait',
+  displayName: 'Esperar / Reanudar',
+  category: 'Flow',
+  icon: '⏸',
+  description: 'Suspende el flujo hasta que algo externo lo reanuda (POST /hooks/resume/<token>). El payload de resume queda como output de este nodo.',
+  ui: {
+    subtitle: 'Pausa hasta resume',
+    inputs: [{ id: 'main' }],
+    outputs: [{ id: 'main' }],
+    gradient: 'linear-gradient(135deg, hsl(45, 90%, 55%), hsl(25, 90%, 50%))'
+  },
+  parameters: [
+    {
+      name: 'resumeMode',
+      label: 'Modo de reanudación',
+      type: 'options',
+      default: 'webhook',
+      options: [
+        { label: 'Webhook (reanudar vía URL con token)', value: 'webhook' }
+      ]
+    }
+  ],
+  // The engine intercepts this signal: it persists the partial run and returns a
+  // `suspended` report with a resume token. On resume, the engine supplies the output.
+  execute: async () => { throw new WorkflowSuspendError(); }
+};
+
 class NodeRegistryClass {
   private registry = new Map<string, LibreFlowNodeDefinition>();
 
@@ -1267,6 +1296,7 @@ class NodeRegistryClass {
     this.register(mcpToolCallNode);
     this.register(dataTableNode);
     this.register(aiAgentNode);
+    this.register(waitNode);
   }
 
   register(node: LibreFlowNodeDefinition) {

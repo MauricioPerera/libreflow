@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import { WorkflowEngine } from './engine.js';
-import { executeWorkflowAndRecord } from './executor.js';
+import { executeWorkflowAndRecord, resumeWorkflowAndRecord } from './executor.js';
 import { 
   initDatabase, 
   getWorkflows, 
@@ -523,6 +523,23 @@ app.delete('/api/mcp-servers/:id', async (req, res) => {
   try {
     await deleteMcpServer(req.params.id);
     return res.json({ success: true });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+// RESUME ENDPOINT — continues a workflow suspended at a `wait` node. The token (returned
+// in the suspended run's report) is the secret; the POSTed body becomes the wait output.
+app.post('/hooks/resume/:token', async (req, res) => {
+  try {
+    const report = await resumeWorkflowAndRecord(req.params.token, req.body ?? {});
+    if (!report) {
+      return res.status(404).json({ error: 'Unknown or already-consumed resume token' });
+    }
+    if (report.suspended) {
+      return res.json({ success: true, suspended: true, resumeToken: report.resumeToken, waitNodeId: report.waitNodeId });
+    }
+    return res.json({ success: report.success, suspended: false, nodeResults: report.nodeResults });
   } catch (err: any) {
     return serverError(res, err);
   }

@@ -1,6 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { WorkflowEngine, WorkflowExecutionReport } from './engine.js';
-import { getWorkflowById, saveExecution, pruneOldExecutions } from './db.js';
+import {
+  getWorkflowById, saveExecution, pruneOldExecutions,
+  savePendingResume, getPendingResume, deletePendingResume,
+} from './db.js';
 
 export interface ExecuteOptions {
   executionId?: string;
@@ -75,6 +78,22 @@ async function runWorkflowAndRecord(
   const engine = new WorkflowEngine();
   const report = await engine.execute(workflow, payload);
 
+  // A `wait` node suspended the run: persist it as 'waiting' + a pending-resume record,
+  // and stop here. POST /hooks/resume/:token continues it later.
+  if (report.suspended) {
+    if (workflow.id) {
+      try {
+        await saveExecution(executionId, workflow.id, 'waiting', report);
+        await savePendingResume(report.resumeToken!, workflow.id, executionId, report.waitNodeId!, {
+          workflow, priorResults: report.nodeResults, initialPayload: payload,
+        });
+      } catch (dbErr) {
+        console.error('[Executor] Error persisting suspended run:', dbErr);
+      }
+    }
+    return report;
+  }
+
   if (workflow.id) {
     try {
       await saveExecution(
@@ -105,6 +124,45 @@ async function runWorkflowAndRecord(
     } catch (dbErr) {
       console.error('[Executor] Error saving execution:', dbErr);
     }
+  }
+
+  return report;
+}
+
+/**
+ * Resumes a suspended workflow (a `wait` node) by its token. Replays the prior nodes from
+ * cached outputs (no re-execution) and continues from the wait node, whose output becomes
+ * `resumePayload`. Returns null if the token is unknown/expired.
+ */
+export async function resumeWorkflowAndRecord(
+  token: string,
+  resumePayload: any = {}
+): Promise<WorkflowExecutionReport | null> {
+  const pending = await getPendingResume(token);
+  if (!pending) return null;
+
+  const { workflow, priorResults, initialPayload } = pending.state;
+  const engine = new WorkflowEngine();
+  const report = await engine.execute(workflow, initialPayload || {}, {}, {
+    waitNodeId: pending.wait_node_id,
+    resumePayload,
+    priorResults,
+  });
+
+  await deletePendingResume(token);
+
+  try {
+    if (report.suspended) {
+      // The continuation hit another wait node — re-suspend under a new token.
+      if (pending.workflow_id) await saveExecution(pending.execution_id, pending.workflow_id, 'waiting', report);
+      await savePendingResume(report.resumeToken!, pending.workflow_id, pending.execution_id, report.waitNodeId!, {
+        workflow, priorResults: report.nodeResults, initialPayload: initialPayload || {},
+      });
+    } else if (pending.workflow_id) {
+      await saveExecution(pending.execution_id, pending.workflow_id, report.success ? 'success' : 'failed', report);
+    }
+  } catch (dbErr) {
+    console.error('[Executor] Error saving resumed run:', dbErr);
   }
 
   return report;

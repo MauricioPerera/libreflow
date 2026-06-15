@@ -8,6 +8,28 @@ export class WorkflowValidationError extends Error {
   }
 }
 
+/**
+ * Thrown by a `wait` node to SUSPEND execution until an external resume. The engine
+ * stamps `token`/`waitNodeId`, persists the partial results, and returns a `suspended`
+ * report. Resuming replays the already-completed nodes from their cached outputs (no
+ * re-execution / no double side effects) and continues from the wait node.
+ */
+export class WorkflowSuspendError extends Error {
+  token = '';
+  waitNodeId = '';
+  constructor() {
+    super('Workflow suspended (waiting for resume)');
+    this.name = 'WorkflowSuspendError';
+  }
+}
+
+/** State needed to resume a suspended run at its wait node. */
+export interface ResumeState {
+  waitNodeId: string;
+  resumePayload: any;
+  priorResults: Record<string, NodeExecutionResult>;
+}
+
 export interface Connection {
   source: string;
   target: string;
@@ -39,6 +61,9 @@ export interface NodeExecutionResult {
 
 export interface WorkflowExecutionReport {
   success: boolean;
+  suspended?: boolean;       // true when a `wait` node paused the run
+  resumeToken?: string;      // present when suspended — POST /hooks/resume/:token to continue
+  waitNodeId?: string;
   startTime: string;
   endTime: string;
   durationMs: number;
@@ -122,8 +147,10 @@ export class WorkflowEngine {
   async execute(
     workflow: Workflow,
     initialPayload: Record<string, any> = {},
-    execMeta: { depth?: number; stack?: string[] } = {}
+    execMeta: { depth?: number; stack?: string[] } = {},
+    resume?: ResumeState
   ): Promise<WorkflowExecutionReport> {
+    const genToken = () => 'rsm-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
     const startTime = new Date();
     const nodeResults: Record<string, NodeExecutionResult> = {};
     const context: ExecutionContext = {};
@@ -187,6 +214,14 @@ export class WorkflowEngine {
       workflow.nodes.filter(n => enclosingLoop.get(n.id) === null).map(n => n.id)
     );
 
+    // v1 limitation: a `wait` node must live in the main graph (suspend/resume does not
+    // checkpoint mid-loop-iteration).
+    for (const node of workflow.nodes) {
+      if (node.type === 'wait' && enclosingLoop.get(node.id) !== null) {
+        throw new WorkflowValidationError('A "wait" node cannot be placed inside a loop.');
+      }
+    }
+
     // Trigger payload is injected via override (never by mutating the shared node).
     const nodeParamOverrides = new Map<string, Record<string, any>>();
     for (const node of workflow.nodes) {
@@ -231,6 +266,13 @@ export class WorkflowEngine {
           ok = true;
           break;
         } catch (err: any) {
+          // A suspend signal is not a failure — never retry/continueOnFail it; bubble up
+          // with this node's id stamped so execute() can persist the resume point.
+          if (err instanceof WorkflowSuspendError) {
+            err.waitNodeId = node.id;
+            if (!err.token) err.token = genToken();
+            throw err;
+          }
           lastError = err;
         }
       }
@@ -366,6 +408,38 @@ export class WorkflowEngine {
         const node = nodeMap.get(nodeId);
         if (!node) continue;
 
+        // --- Resume replay: don't re-execute work done before the suspend ---
+        if (resume) {
+          if (nodeId === resume.waitNodeId) {
+            // The wait node "returns" the resume payload; downstream reads it as its output.
+            const now = new Date().toISOString();
+            const output = resume.resumePayload;
+            context[node.name] = { output };
+            nodeResults[nodeId] = { nodeId, nodeName: node.name, status: 'success', output, startTime: now, endTime: now, durationMs: 0 };
+            for (const conn of outgoingMap.get(nodeId) || []) propagate(conn, 'success');
+            continue;
+          }
+          const prior = resume.priorResults[nodeId];
+          if (prior) {
+            nodeResults[nodeId] = prior;
+            if (prior.status === 'skipped') {
+              for (const conn of outgoingMap.get(nodeId) || []) propagate(conn, 'skipped');
+            } else {
+              context[node.name] = { output: prior.output };
+              for (const conn of outgoingMap.get(nodeId) || []) {
+                let pathStatus: 'success' | 'skipped' = 'success';
+                if (node.type === 'if') {
+                  const r = prior.output?.result;
+                  if (conn.sourceHandle === 'true' && !r) pathStatus = 'skipped';
+                  else if (conn.sourceHandle === 'false' && r) pathStatus = 'skipped';
+                }
+                propagate(conn, pathStatus);
+              }
+            }
+            continue;
+          }
+        }
+
         if (status === 'skip') {
           const at = new Date().toISOString();
           nodeResults[nodeId] = { nodeId, nodeName: node.name, status: 'skipped', startTime: at, endTime: at, durationMs: 0 };
@@ -424,7 +498,24 @@ export class WorkflowEngine {
     };
 
     // --- Run the top-level graph ---
-    await runSubgraph(mainNodeIds);
+    try {
+      await runSubgraph(mainNodeIds);
+    } catch (err: any) {
+      if (err instanceof WorkflowSuspendError) {
+        const endTime = new Date();
+        return {
+          success: false,
+          suspended: true,
+          resumeToken: err.token,
+          waitNodeId: err.waitNodeId,
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          durationMs: endTime.getTime() - startTime.getTime(),
+          nodeResults,
+        };
+      }
+      throw err;
+    }
 
     // Reconcile nodes that never produced a result:
     //  - inside a loop body whose loop never ran  → legitimately skipped
