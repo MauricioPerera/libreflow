@@ -1,7 +1,7 @@
 import { LibreFlowNodeDefinition } from './sdk.js';
 import { WorkflowSuspendError } from './engine.js';
 import { getCredentialById, getWorkflowById } from './db.js';
-import { Worker } from 'worker_threads';
+import ivm from 'isolated-vm';
 import { executeMcpToolCall } from './mcp.js';
 import { assertSafeUrl, isUnsafeKey } from './security.js';
 
@@ -294,90 +294,85 @@ const jsCodeNode: LibreFlowNodeDefinition = {
     }
   ],
   execute: async (params, context) => {
-    // SECURITY: this worker has full Node access (require/fs/child_process) — it is NOT
-    // a real sandbox. Disabled by default in production; enable only on trusted instances.
-    // The hardened path is to run user code in isolated-vm with no host bindings.
-    const jsCodeEnabled =
-      process.env.LF_ENABLE_JS_CODE === 'true' || process.env.NODE_ENV !== 'production';
-    if (!jsCodeEnabled) {
-      throw new Error(
-        'jsCode node is disabled. It executes arbitrary code with full host access. ' +
-        'Set LF_ENABLE_JS_CODE=true only on a trusted, isolated instance.'
-      );
+    // El código del usuario corre en un aislado de isolated-vm (motor V8 sin bindings al
+    // host: sin require/fs/process/red). Memoria y tiempo acotados. Por eso es seguro en
+    // producción y NO necesita ningún flag para habilitarse.
+    const code = params.code || 'return {};';
+    const timeoutMs = Math.max(50, Number(process.env.LF_JS_TIMEOUT_MS) || 5000);
+    const memoryMb = Math.max(8, Number(process.env.LF_JS_MEMORY_MB) || 128);
+
+    // El contexto (salidas de nodos previos) se inyecta como COPIA — no hay referencias
+    // vivas a objetos del host, así que el código aislado no puede mutar el estado real.
+    let safeContext: Record<string, any> = {};
+    try {
+      safeContext = JSON.parse(JSON.stringify(context ?? {}));
+    } catch {
+      safeContext = {};
     }
 
-    const code = params.code || 'return {};';
-    const timeoutMs = 5000;
+    const isolate = new ivm.Isolate({ memoryLimit: memoryMb });
+    try {
+      const vmContext = await isolate.createContext();
+      const jail = vmContext.global;
 
-    return new Promise((resolve, reject) => {
-      const workerCode = `
-        const { parentPort, workerData } = require('worker_threads');
+      // Inyecta el contexto copiado y un puente de log (única referencia al host, solo
+      // recibe strings y no devuelve nada al aislado).
+      jail.setSync('__lfContext', new ivm.ExternalCopy(safeContext).copyInto());
+      jail.setSync('__lfLog', new ivm.Reference((level: string, msg: string) => {
+        const line = `[jsCode] ${msg}`;
+        if (level === 'error') console.error(line);
+        else if (level === 'warn') console.warn(line);
+        else console.log(line);
+      }));
 
-        async function run() {
-          const { code, context } = workerData;
-
-          const $node = new Proxy({}, {
-            get(target, prop) {
-              if (typeof prop === 'string') {
-                return context[prop] || { output: {} };
-              }
-              return undefined;
-            }
-          });
-
+      // Envuelve el código del usuario: reconstruye `$node`/`context`/`console` DENTRO del
+      // aislado (JS puro, sin host) y devuelve la promesa de `run()`.
+      const wrapped = `(function () {
+        const context = __lfContext;
+        const __fwd = (level) => (...args) => {
           try {
-            const fn = new Function('$node', 'context', \`
-              const run = async () => {
-                \${code}
-              };
-              return run();
-            \`);
-            const result = await fn($node, context);
-            parentPort.postMessage({ success: true, result });
-          } catch (err) {
-            parentPort.postMessage({ success: false, error: err.message });
+            const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+            __lfLog.applyIgnored(undefined, [level, msg]);
+          } catch (e) { /* logging nunca debe romper el script */ }
+        };
+        const console = { log: __fwd('log'), info: __fwd('info'), warn: __fwd('warn'), error: __fwd('error'), debug: __fwd('debug') };
+        const $node = new Proxy({}, {
+          get(target, prop) {
+            if (typeof prop === 'string') return context[prop] || { output: {} };
+            return undefined;
           }
+        });
+        const run = async () => {
+          ${code}
+        };
+        return run();
+      })()`;
+
+      let script;
+      try {
+        script = await isolate.compileScript(wrapped);
+      } catch (err: any) {
+        throw new Error(`JS Code execution failed: ${err?.message || String(err)}`);
+      }
+
+      let result;
+      try {
+        result = await script.run(vmContext, { timeout: timeoutMs, promise: true, copy: true });
+      } catch (err: any) {
+        const m = err?.message || String(err);
+        if (/script execution timed out|timed out/i.test(m)) {
+          throw new Error(`JS Code execution timed out (limit: ${timeoutMs}ms)`);
         }
-
-        run();
-      `;
-
-      const worker = new Worker(workerCode, {
-        eval: true,
-        workerData: { code, context }
-      });
-
-      const timeout = setTimeout(() => {
-        worker.terminate().catch(console.error);
-        reject(new Error(`JS Code execution timed out (limit: ${timeoutMs}ms)`));
-      }, timeoutMs);
-
-      worker.on('message', (message) => {
-        clearTimeout(timeout);
-        worker.terminate().catch(console.error);
-        if (message.success) {
-          resolve(message.result === undefined ? {} : message.result);
-        } else {
-          reject(new Error(`JS Code execution failed: ${message.error}`));
+        if (/memory limit/i.test(m)) {
+          throw new Error(`JS Code exceeded memory limit (${memoryMb}MB)`);
         }
-      });
+        throw new Error(`JS Code execution failed: ${m}`);
+      }
 
-      worker.on('error', (err) => {
-        clearTimeout(timeout);
-        worker.terminate().catch(console.error);
-        reject(err);
-      });
-
-      worker.on('exit', (exitCode) => {
-        clearTimeout(timeout);
-        worker.terminate().catch(console.error);
-        if (exitCode !== 0) {
-          reject(new Error(`Worker stopped with exit code ${exitCode}`));
-        } else {
-          resolve({});
-        }
-      });
-    });
+      return result === undefined ? {} : result;
+    } finally {
+      try { isolate.dispose(); } catch { /* ya liberado */ }
+    }
   }
 };
 
