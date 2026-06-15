@@ -1,8 +1,40 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import express from 'express';
+import { Server as SdkServer } from '@modelcontextprotocol/sdk/server/index.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import router, { sanitizeMcpName, activeConnections, validateWorkflow } from '../src/mcp.js';
 import { executeNode } from '../src/nodes.js';
 import { NodeRegistry } from '../src/registry.js';
-import { executeMcpToolCall } from '../src/mcp.js';
+import { executeMcpToolCall, fetchToolsFromMcpServer } from '../src/mcp.js';
+
+// Spins up a real in-process MCP server (Streamable HTTP, stateless) exposing an `echo`
+// tool that returns the arguments it received — used to exercise the SDK-based client.
+function startEchoServer(): Promise<{ url: string; close: () => void; lastAuth: () => string | undefined }> {
+  const app = express();
+  app.use(express.json());
+  let lastAuth: string | undefined;
+  app.post('/mcp', async (req, res) => {
+    lastAuth = req.headers.authorization as string | undefined;
+    const server = new SdkServer({ name: 'echo', version: '1.0.0' }, { capabilities: { tools: {} } });
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [{ name: 'echo', description: 'Devuelve los argumentos recibidos', inputSchema: { type: 'object' } }],
+    }));
+    server.setRequestHandler(CallToolRequestSchema, async (r: any) => ({
+      content: [{ type: 'text', text: JSON.stringify(r.params.arguments) }],
+    }));
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on('close', () => { transport.close(); server.close(); });
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  });
+  return new Promise((resolve) => {
+    const srv = app.listen(0, () => {
+      const port = (srv.address() as any).port;
+      resolve({ url: `http://127.0.0.1:${port}/mcp`, close: () => srv.close(), lastAuth: () => lastAuth });
+    });
+  });
+}
 
 // Mock db.ts
 vi.mock('../src/db.js', () => {
@@ -33,6 +65,7 @@ vi.mock('../src/db.js', () => {
     getActiveWorkflows: async () => [mockWorkflow],
     getWorkflows: async () => [mockWorkflow],
     getWorkflowById: async (id: string) => id === 'flow-1' ? mockWorkflow : null,
+    getWorkflowsByIds: async (ids: string[]) => ids.map((id) => (id === 'flow-1' ? mockWorkflow : null)).filter(Boolean),
     saveWorkflow: async (id: string, name: string, nodes: any[], connections: any[], onErrorId?: string) => {},
     getAllExecutions: async () => [
       { id: 'exec-1', workflowId: 'flow-1', success: true, durationMs: 150, startTime: '2026-06-14T00:00:00Z', endTime: '2026-06-14T00:00:00Z' }
@@ -45,9 +78,17 @@ vi.mock('../src/db.js', () => {
     getDataTableRows: async (tableId: string) => [
       { id: 'row-1', table_id: tableId, data: { email: 'test@example.com' }, created_at: '2026-06-14T00:00:00Z', updated_at: '2026-06-14T00:00:00Z' }
     ],
+    countDataTableRows: async () => 1,
     addDataTableRow: async (tableId: string, rowId: string, data: any) => {},
     updateDataTableRow: async (rowId: string, data: any) => {},
-    deleteDataTableRow: async (rowId: string) => {}
+    deleteDataTableRow: async (rowId: string) => {},
+    upsertDataTableRow: async () => ({}),
+    incrementDataTableRow: async () => ({}),
+    getOrCreateDataTableRow: async () => ({}),
+    queryDataTableRows: async () => [],
+    getCredentialById: async (id: string) => id === 'cred-mcp'
+      ? { id: 'cred-mcp', name: 'MCP Token', type: 'apiKey', data: { name: 'Authorization', value: 'Bearer secreto-123', in: 'header' } }
+      : null,
   };
 });
 
@@ -87,136 +128,76 @@ describe('MCP Server & Client Integration', () => {
     });
   });
 
-  describe('MCP Client functions', () => {
-    it('should mock connect, list tools, and call tools via fetch using Uint8Array streams', async () => {
-      const encoder = new TextEncoder();
-      const mockSseBody = {
-        [Symbol.asyncIterator]: async function* () {
-          yield encoder.encode("event: endpoint\ndata: /api/mcp/message?connectionId=conn-123\n\n");
-        }
-      };
+  describe('MCP Client functions (SDK, real server)', () => {
+    let echo: { url: string; close: () => void };
+    beforeAll(async () => { echo = await startEchoServer(); });
+    afterAll(() => echo?.close());
 
-      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async (url: any, options: any) => {
-        if (typeof url === 'string' && url.endsWith('/sse-server')) {
-          // SSE Handshake
-          return {
-            ok: true,
-            body: mockSseBody
-          } as any;
-        }
+    it('fetchToolsFromMcpServer lista las tools de un servidor Streamable HTTP estándar', async () => {
+      const tools = await fetchToolsFromMcpServer(echo.url);
+      expect(tools.map((t: any) => t.name)).toContain('echo');
+    });
 
-        // POST requests to message endpoint
-        if (options && options.method === 'POST') {
-          const body = JSON.parse(options.body);
-          if (body.method === 'initialize') {
-            return {
-              ok: true,
-              json: async () => ({
-                jsonrpc: '2.0',
-                id: body.id,
-                result: { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'mock-server', version: '1.0' } }
-              })
-            } as any;
-          }
-          if (body.method === 'tools/call') {
-            return {
-              ok: true,
-              json: async () => ({
-                jsonrpc: '2.0',
-                id: body.id,
-                result: {
-                  content: [{ type: 'text', text: '{"success":true,"result":"Ok"}' }]
-                }
-              })
-            } as any;
-          }
-        }
-
-        return { ok: false } as any;
-      });
-
-      const result = await executeMcpToolCall('http://localhost:9999/sse-server', 'my_tool', { param1: 'test' });
-      expect(result.content[0].text).toContain('Ok');
-      expect(fetchSpy).toHaveBeenCalled();
-      fetchSpy.mockRestore();
+    it('executeMcpToolCall ejecuta una tool y devuelve su contenido', async () => {
+      const result = await executeMcpToolCall(echo.url, 'echo', { param1: 'test' });
+      expect(JSON.parse(result.content[0].text)).toEqual({ param1: 'test' });
     });
   });
 
-  describe('Node Registry mcpToolCall execution', () => {
-    it('should execute mcpToolCall node in engine', async () => {
+  describe('Node Registry mcpToolCall execution (SDK, real server)', () => {
+    let echo: { url: string; close: () => void };
+    beforeAll(async () => { echo = await startEchoServer(); });
+    afterAll(() => echo?.close());
+
+    it('coacciona argumentos keyvalue (string→number/bool) y los envía al servidor', async () => {
       const mcpNode = NodeRegistry.getNodeType('mcpToolCall');
       expect(mcpNode).toBeDefined();
 
-      const encoder = new TextEncoder();
-      const mockSseBody = {
-        [Symbol.asyncIterator]: async function* () {
-          yield encoder.encode("event: endpoint\ndata: /api/mcp/message?connectionId=conn-123\n\n");
-        }
-      };
-
-      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(async (url: any, options: any) => {
-        if (typeof url === 'string' && url.endsWith('/sse')) {
-          return { ok: true, body: mockSseBody } as any;
-        }
-        if (options && options.method === 'POST') {
-          const body = JSON.parse(options.body);
-          if (body.method === 'initialize') {
-            return {
-              ok: true,
-              json: async () => ({ jsonrpc: '2.0', id: body.id, result: {} })
-            } as any;
-          }
-          if (body.method === 'tools/call') {
-            return {
-              ok: true,
-              json: async () => ({
-                jsonrpc: '2.0',
-                id: body.id,
-                result: { hello: 'world' }
-              })
-            } as any;
-          }
-        }
-        return { ok: false } as any;
-      });
-
-      // Passing arguments both as array (keyvalue parameter style)
       const nodeObjArray = {
         id: 'node-mcp-1',
         type: 'mcpToolCall',
         name: 'McpCall',
         parameters: {
-          serverUrl: 'http://localhost:5000/sse',
-          toolName: 'my_tool',
+          serverUrl: echo.url,
+          toolName: 'echo',
           arguments: [
             { key: 'nombre', value: 'Diego' },
             { key: 'edad', value: '30' }
           ]
         }
       };
-
       const outputArray = await executeNode(nodeObjArray, {});
-      expect(outputArray).toEqual({ hello: 'world' });
+      expect(JSON.parse(outputArray.content[0].text)).toEqual({ nombre: 'Diego', edad: 30 });
 
-      // Passing arguments as a raw object (safe check validation)
       const nodeObjRaw = {
         id: 'node-mcp-2',
         type: 'mcpToolCall',
         name: 'McpCallRaw',
         parameters: {
-          serverUrl: 'http://localhost:5000/sse',
-          toolName: 'my_tool',
-          arguments: {
-            nombre: 'Diego',
-            edad: 30
-          }
+          serverUrl: echo.url,
+          toolName: 'echo',
+          arguments: { nombre: 'Diego', edad: 30 }
         }
       };
-
       const outputRaw = await executeNode(nodeObjRaw, {});
-      expect(outputRaw).toEqual({ hello: 'world' });
+      expect(JSON.parse(outputRaw.content[0].text)).toEqual({ nombre: 'Diego', edad: 30 });
+    });
 
-      fetchSpy.mockRestore();
+    it('aplica la credencial del vault como header Authorization', async () => {
+      const node = {
+        id: 'node-mcp-auth',
+        type: 'mcpToolCall',
+        name: 'McpAuth',
+        parameters: {
+          serverUrl: echo.url,
+          toolName: 'echo',
+          authentication: 'genericCredential',
+          credentialId: 'cred-mcp',
+          arguments: [{ key: 'x', value: '1' }],
+        },
+      };
+      await executeNode(node, {});
+      expect(echo.lastAuth()).toBe('Bearer secreto-123');
     });
   });
 

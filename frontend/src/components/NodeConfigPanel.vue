@@ -31,10 +31,10 @@
 
       <!-- Dynamic SDK Parameter Form Fields -->
       <div v-if="nodeDef" class="node-config-form">
-        <div 
-          v-for="param in nodeDef.parameters" 
-          :key="param.name" 
-          v-show="param.name !== 'cronExpression' || localParams.triggerMode === 'cron'"
+        <div
+          v-for="param in nodeDef.parameters"
+          :key="param.name"
+          v-show="isParamVisible(param)"
           class="config-group"
         >
           <label class="config-label">{{ param.label }}</label>
@@ -42,8 +42,8 @@
           <!-- Render dropdown options -->
           <div v-if="param.type === 'options'">
             <!-- Special case: Credential ID -->
-            <select 
-              v-if="param.name === 'credentialId'"
+            <select
+              v-if="param.name === 'credentialId' || param.name === 'mcpCredentialId'"
               v-model="localParams[param.name]"
               class="config-select"
               :disabled="readOnly"
@@ -492,10 +492,23 @@ const getParamOptions = (param: NodeParameterSchema) => {
   if (props.node?.type === 'mcpToolCall' && param.name === 'toolName') {
     return dynamicOptions.value['toolName'] || [];
   }
-  if (props.node?.type === 'dataTable' && param.name === 'tableId') {
+  if ((props.node?.type === 'dataTable' || props.node?.type === 'trigger') && param.name === 'tableId') {
     return dynamicOptions.value['tableId'] || [];
   }
+  if (props.node?.type === 'aiAgent' && param.name === 'mcpServerId') {
+    return dynamicOptions.value['mcpServerId'] || [];
+  }
   return param.options || [];
+};
+
+// Hides trigger-mode-specific fields when their mode isn't selected (keeps the form clean).
+const isParamVisible = (param: NodeParameterSchema) => {
+  const mode = localParams.value?.triggerMode;
+  if (param.name === 'cronExpression') return mode === 'cron';
+  if (param.name === 'tableEvent') return mode === 'dataTable';
+  if (param.name === 'tableId' && props.node?.type === 'trigger') return mode === 'dataTable';
+  if (param.name === 'inputSchema') return mode !== 'dataTable';
+  return true;
 };
 
 let debounceTimeout: any = null;
@@ -565,9 +578,26 @@ const fetchDataTablesForDropdown = async () => {
   }
 };
 
+const fetchMcpServersForDropdown = async () => {
+  try {
+    const res = await fetch('/api/mcp-servers');
+    const list = res.ok ? await res.json() : [];
+    dynamicOptions.value['mcpServerId'] = [
+      { label: 'Sin herramientas (solo LLM)', value: '' },
+      ...list.map((s: any) => ({ label: `🔌 ${s.name} (${(s.workflow_ids || []).length} flujos)`, value: s.id })),
+    ];
+  } catch (err) {
+    console.error('Error fetching MCP servers for dropdown:', err);
+    dynamicOptions.value['mcpServerId'] = [{ label: 'Sin herramientas (solo LLM)', value: '' }];
+  }
+};
+
 watch(() => props.node?.id, () => {
-  if (props.node?.type === 'dataTable') {
+  if (props.node?.type === 'dataTable' || props.node?.type === 'trigger') {
     fetchDataTablesForDropdown();
+  }
+  if (props.node?.type === 'aiAgent') {
+    fetchMcpServersForDropdown();
   }
 }, { immediate: true });
 

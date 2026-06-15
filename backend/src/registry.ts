@@ -4,6 +4,42 @@ import { Worker } from 'worker_threads';
 import { executeMcpToolCall } from './mcp.js';
 import { assertSafeUrl, isUnsafeKey } from './security.js';
 
+/**
+ * Loads a stored credential and returns the auth to apply: headers to merge and query
+ * params to append. Single source of truth for the credential→auth scheme (basicAuth →
+ * Authorization: Basic; apiKey → custom header or query param), shared by httpRequest,
+ * mcpToolCall and aiAgent.
+ */
+export async function resolveCredentialAuth(credentialId?: string): Promise<{ headers: Record<string, string>; query: Record<string, string> }> {
+  const headers: Record<string, string> = {};
+  const query: Record<string, string> = {};
+  if (!credentialId) return { headers, query };
+  const cred = await getCredentialById(credentialId);
+  if (!cred || !cred.data) {
+    console.warn(`[Credential] Not found or failed to load: ${credentialId}`);
+    return { headers, query };
+  }
+  if (cred.type === 'basicAuth') {
+    const { user = '', password = '' } = cred.data;
+    headers['Authorization'] = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
+  } else if (cred.type === 'apiKey') {
+    const { name = '', value = '', in: keyIn = 'header' } = cred.data;
+    if (name && value) {
+      if (keyIn === 'query') query[name] = value;
+      else headers[name] = value;
+    }
+  }
+  return { headers, query };
+}
+
+/** Appends query params to a URL string (no-op when empty). */
+function appendQueryParams(url: string, query: Record<string, string>): string {
+  if (Object.keys(query).length === 0) return url;
+  const u = new URL(url);
+  for (const [k, v] of Object.entries(query)) u.searchParams.append(k, v);
+  return u.toString();
+}
+
 /** Builds a plain object from key/value pairs, skipping prototype-pollution keys. */
 function safeAssignKeyValues(values: any[]): Record<string, any> {
   const result: Record<string, any> = {};
@@ -35,7 +71,26 @@ const triggerNode: LibreFlowNodeDefinition = {
       options: [
         { label: 'Manual (Ejecución directa)', value: 'manual' },
         { label: 'Webhook (URL Externa)', value: 'webhook' },
-        { label: 'Cron (Programado)', value: 'cron' }
+        { label: 'Cron (Programado)', value: 'cron' },
+        { label: 'Tabla de Datos (Reactivo)', value: 'dataTable' }
+      ]
+    },
+    {
+      name: 'tableId',
+      label: 'Tabla de Datos a observar',
+      type: 'options',
+      default: '',
+      options: []
+    },
+    {
+      name: 'tableEvent',
+      label: 'Evento que dispara',
+      type: 'options',
+      default: 'any',
+      options: [
+        { label: 'Insertar o actualizar', value: 'any' },
+        { label: 'Solo al insertar', value: 'insert' },
+        { label: 'Solo al actualizar', value: 'update' }
       ]
     },
     {
@@ -177,27 +232,9 @@ const httpRequestNode: LibreFlowNodeDefinition = {
     let requestUrl = url;
 
     if (authentication === 'genericCredential' && credentialId) {
-      const cred = await getCredentialById(credentialId);
-      if (cred && cred.data) {
-        if (cred.type === 'basicAuth') {
-          const { user = '', password = '' } = cred.data;
-          const authString = Buffer.from(`${user}:${password}`).toString('base64');
-          headerObj['Authorization'] = `Basic ${authString}`;
-        } else if (cred.type === 'apiKey') {
-          const { name = '', value = '', in: keyIn = 'header' } = cred.data;
-          if (name && value) {
-            if (keyIn === 'query') {
-              const parsedUrl = new URL(url);
-              parsedUrl.searchParams.append(name, value);
-              requestUrl = parsedUrl.toString();
-            } else {
-              headerObj[name] = value;
-            }
-          }
-        }
-      } else {
-        console.warn(`[Node: httpRequest] Credential not found or failed to load: ${credentialId}`);
-      }
+      const auth = await resolveCredentialAuth(credentialId);
+      Object.assign(headerObj, auth.headers);
+      requestUrl = appendQueryParams(requestUrl, auth.query);
     }
 
     const fetchOptions: RequestInit = {
@@ -657,10 +694,27 @@ const mcpToolCallNode: LibreFlowNodeDefinition = {
   parameters: [
     {
       name: 'serverUrl',
-      label: 'URL del Servidor MCP (SSE)',
+      label: 'URL del Servidor MCP',
       type: 'string',
-      default: 'http://localhost:3011/sse',
-      placeholder: 'http://localhost:3011/sse'
+      default: 'http://localhost:3000/mcp/<id>',
+      placeholder: 'Streamable HTTP (recomendado) o SSE',
+      description: 'Acepta servidores MCP estándar: Streamable HTTP (transporte actual) o SSE (legacy).'
+    },
+    {
+      name: 'authentication',
+      label: 'Autenticación',
+      type: 'options',
+      default: 'none',
+      options: [
+        { label: 'Ninguna', value: 'none' },
+        { label: 'Credencial Genérica', value: 'genericCredential' }
+      ]
+    },
+    {
+      name: 'credentialId',
+      label: 'Credencial Asociada',
+      type: 'options',
+      default: ''
     },
     {
       name: 'toolName',
@@ -677,7 +731,7 @@ const mcpToolCallNode: LibreFlowNodeDefinition = {
     }
   ],
   execute: async (params) => {
-    const { serverUrl, toolName, arguments: argsList } = params;
+    const { serverUrl, toolName, arguments: argsList, authentication = 'none', credentialId } = params;
     if (!serverUrl || !toolName) {
       throw new Error('MCP Tool Call Node error: serverUrl and toolName are required');
     }
@@ -702,7 +756,16 @@ const mcpToolCallNode: LibreFlowNodeDefinition = {
       Object.assign(argsObj, argsList);
     }
 
-    return await executeMcpToolCall(serverUrl, toolName, argsObj);
+    // Resolve auth from the encrypted credentials vault (shared helper).
+    let requestUrl = serverUrl;
+    let headers: Record<string, string> = {};
+    if (authentication === 'genericCredential' && credentialId) {
+      const auth = await resolveCredentialAuth(credentialId);
+      headers = auth.headers;
+      requestUrl = appendQueryParams(serverUrl, auth.query);
+    }
+
+    return await executeMcpToolCall(requestUrl, toolName, argsObj, headers);
   }
 };
 
@@ -728,7 +791,11 @@ const dataTableNode: LibreFlowNodeDefinition = {
         { label: 'Añadir fila (Append)', value: 'append' },
         { label: 'Buscar filas (Search)', value: 'search' },
         { label: 'Actualizar fila (Update)', value: 'update' },
-        { label: 'Eliminar fila (Delete)', value: 'delete' }
+        { label: 'Eliminar fila (Delete)', value: 'delete' },
+        { label: 'Insertar/Actualizar por clave (Upsert)', value: 'upsert' },
+        { label: 'Incrementar contador (Increment)', value: 'increment' },
+        { label: 'Obtener o crear por clave (Get or Default)', value: 'getOrDefault' },
+        { label: 'Consultar con operadores (Query)', value: 'query' }
       ]
     },
     {
@@ -746,6 +813,25 @@ const dataTableNode: LibreFlowNodeDefinition = {
       placeholder: 'row-123456789'
     },
     {
+      name: 'key',
+      label: 'Valor de la Clave (upsert/increment/get)',
+      type: 'string',
+      default: '',
+      placeholder: 'p.ej. el email o id que identifica la fila'
+    },
+    {
+      name: 'field',
+      label: 'Campo a Incrementar',
+      type: 'string',
+      default: 'count'
+    },
+    {
+      name: 'amount',
+      label: 'Incremento',
+      type: 'string',
+      default: '1'
+    },
+    {
       name: 'fields',
       label: 'Campos de la Fila',
       type: 'keyvalue',
@@ -756,15 +842,93 @@ const dataTableNode: LibreFlowNodeDefinition = {
       label: 'Filtros de Búsqueda',
       type: 'keyvalue',
       default: []
+    },
+    {
+      name: 'queryFilters',
+      label: 'Filtros de Consulta (Query, JSON)',
+      type: 'json',
+      default: '[]',
+      placeholder: '[{"column":"status","op":"eq","value":"active"}]',
+      description: 'Operadores: eq, ne, gt, lt, gte, lte, contains, in.'
+    },
+    {
+      name: 'sortColumn',
+      label: 'Ordenar por (columna)',
+      type: 'string',
+      default: ''
+    },
+    {
+      name: 'sortDir',
+      label: 'Dirección de orden',
+      type: 'options',
+      default: 'asc',
+      options: [
+        { label: 'Ascendente', value: 'asc' },
+        { label: 'Descendente', value: 'desc' }
+      ]
+    },
+    {
+      name: 'limit',
+      label: 'Límite de resultados',
+      type: 'string',
+      default: '100'
     }
   ],
   execute: async (params) => {
-    const { operation = 'append', tableId, rowId, fields = [], filters = [] } = params;
+    const { operation = 'append', tableId, rowId, fields = [], filters = [], key, field = 'count', amount = '1' } = params;
     if (!tableId) {
       throw new Error('Data Table Node error: tableId is required');
     }
 
-    const { getDataTableRows, addDataTableRow, updateDataTableRow, deleteDataTableRow } = await import('./db.js');
+    const {
+      getDataTableRows, addDataTableRow, updateDataTableRow, deleteDataTableRow,
+      upsertDataTableRow, incrementDataTableRow, getOrCreateDataTableRow, queryDataTableRows
+    } = await import('./db.js');
+
+    // Coerces keyvalue pairs into a typed object (string→bool/number), shared by write ops.
+    const buildDataObject = (items: any[]): Record<string, any> => {
+      const obj: Record<string, any> = {};
+      for (const item of items || []) {
+        if (item && item.key) {
+          let val = item.value;
+          if (typeof val === 'string') {
+            if (val === 'true') val = true;
+            else if (val === 'false') val = false;
+            else if (!isNaN(Number(val)) && val.trim() !== '') val = Number(val);
+          }
+          obj[item.key] = val;
+        }
+      }
+      return obj;
+    };
+
+    if (operation === 'upsert') {
+      return await upsertDataTableRow(tableId, buildDataObject(fields));
+    }
+
+    if (operation === 'increment') {
+      if (!key) throw new Error('Data Table Node error: key is required for increment operation');
+      const amt = Number(amount);
+      return await incrementDataTableRow(tableId, String(key), field, isNaN(amt) ? 1 : amt);
+    }
+
+    if (operation === 'getOrDefault') {
+      if (!key) throw new Error('Data Table Node error: key is required for getOrDefault operation');
+      return await getOrCreateDataTableRow(tableId, String(key), buildDataObject(fields));
+    }
+
+    if (operation === 'query') {
+      let qf: any = params.queryFilters;
+      if (typeof qf === 'string') {
+        try { qf = JSON.parse(qf || '[]'); } catch { throw new Error('Data Table Node error: queryFilters must be valid JSON'); }
+      }
+      if (!Array.isArray(qf)) qf = [];
+      const sort = params.sortColumn
+        ? { column: params.sortColumn, dir: (params.sortDir === 'desc' ? 'desc' : 'asc') as 'asc' | 'desc' }
+        : undefined;
+      const limit = params.limit ? Number(params.limit) : undefined;
+      return await queryDataTableRows(tableId, qf, { sort, limit });
+    }
 
     if (operation === 'append') {
       const dataObj: Record<string, any> = {};
@@ -840,6 +1004,253 @@ const dataTableNode: LibreFlowNodeDefinition = {
   }
 };
 
+const aiAgentNode: LibreFlowNodeDefinition = {
+  type: 'aiAgent',
+  displayName: 'Agente IA',
+  category: 'AI',
+  icon: '🤖',
+  description: 'Agente LLM que usa un servidor MCP como herramientas (bucle de tool-calling)',
+  ui: {
+    subtitle: 'Agente con herramientas',
+    inputs: [{ id: 'main' }],
+    outputs: [{ id: 'main' }],
+    gradient: 'linear-gradient(135deg, hsl(265, 85%, 60%), hsl(220, 85%, 55%))'
+  },
+  parameters: [
+    {
+      name: 'endpoint',
+      label: 'Endpoint (OpenAI-compatible)',
+      type: 'string',
+      default: 'http://localhost:1234/v1',
+      placeholder: 'http://localhost:1234/v1 (LM Studio), https://api.openai.com/v1, …'
+    },
+    {
+      name: 'model',
+      label: 'Modelo',
+      type: 'string',
+      default: '',
+      placeholder: 'p.ej. qwen/qwen3-4b-2507 o gpt-4o-mini'
+    },
+    {
+      name: 'authentication',
+      label: 'Autenticación',
+      type: 'options',
+      default: 'none',
+      options: [
+        { label: 'Ninguna (LM Studio local)', value: 'none' },
+        { label: 'Credencial (API Key)', value: 'genericCredential' }
+      ]
+    },
+    {
+      name: 'credentialId',
+      label: 'Credencial del LLM',
+      type: 'options',
+      default: ''
+    },
+    {
+      name: 'systemPrompt',
+      label: 'System Prompt',
+      type: 'code',
+      default: 'Eres un asistente que cumple la tarea del usuario usando las herramientas disponibles. Responde de forma breve cuando termines.'
+    },
+    {
+      name: 'userMessage',
+      label: 'Mensaje / Tarea',
+      type: 'string',
+      default: '',
+      placeholder: 'La tarea para el agente (admite expresiones {{ $node.X.output... }})'
+    },
+    {
+      name: 'mcpServerId',
+      label: 'Servidor MCP propio (herramientas)',
+      type: 'options',
+      default: '',
+      options: []
+    },
+    {
+      name: 'mcpServerUrl',
+      label: 'Servidor MCP externo (URL)',
+      type: 'string',
+      default: '',
+      placeholder: 'Opcional. Tiene prioridad sobre el servidor propio. Streamable HTTP o SSE.'
+    },
+    {
+      name: 'mcpAuthentication',
+      label: 'Auth del servidor MCP externo',
+      type: 'options',
+      default: 'none',
+      options: [
+        { label: 'Ninguna', value: 'none' },
+        { label: 'Credencial (API Key)', value: 'genericCredential' }
+      ]
+    },
+    {
+      name: 'mcpCredentialId',
+      label: 'Credencial del servidor MCP',
+      type: 'options',
+      default: ''
+    },
+    {
+      name: 'maxIterations',
+      label: 'Máx. iteraciones',
+      type: 'string',
+      default: '5'
+    },
+    {
+      name: 'temperature',
+      label: 'Temperatura',
+      type: 'string',
+      default: '0'
+    },
+    {
+      name: 'timeoutMs',
+      label: 'Timeout por llamada al LLM (ms)',
+      type: 'string',
+      default: '120000'
+    }
+  ],
+  execute: async (params) => {
+    const {
+      endpoint = 'http://localhost:1234/v1',
+      model,
+      authentication = 'none',
+      credentialId,
+      systemPrompt,
+      userMessage,
+      mcpServerId,
+      mcpServerUrl,
+      mcpAuthentication = 'none',
+      mcpCredentialId,
+      maxIterations = '5',
+      temperature = '0',
+      timeoutMs = '120000'
+    } = params;
+
+    if (!model) throw new Error('AI Agent error: model is required');
+    if (!userMessage) throw new Error('AI Agent error: userMessage is required');
+
+    // SSRF guard on the LLM endpoint (private IPs blocked in production, allowed in dev).
+    await assertSafeUrl(endpoint);
+
+    // LLM auth from the encrypted credentials vault (shared helper).
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    let llmEndpoint = endpoint;
+    if (authentication === 'genericCredential' && credentialId) {
+      const auth = await resolveCredentialAuth(credentialId);
+      Object.assign(headers, auth.headers);
+      llmEndpoint = appendQueryParams(endpoint, auth.query);
+    }
+
+    const toOpenAI = (tools: any[]) => tools.map((t: any) => ({
+      type: 'function',
+      function: { name: t.name, description: t.description, parameters: t.inputSchema || { type: 'object', properties: {} } }
+    }));
+
+    // Toolset resolution. Two modes:
+    //  - External MCP server (URL): via the SDK client, optionally authenticated.
+    //  - Own named MCP server (id): IN-PROCESS via dispatchMcpRpc (no HTTP, no auth).
+    // `callTool(name, args)` abstracts the dispatch for the loop below.
+    let openaiTools: any[] = [];
+    let callTool: ((name: string, args: any) => Promise<string>) | null = null;
+    let mcpSession: { close: () => void } | null = null;
+
+    if (mcpServerUrl) {
+      // External MCP: auth from the vault, ONE persistent client session reused across the
+      // loop (avoids a connect+initialize handshake per tool call).
+      const mcpAuth = (mcpAuthentication === 'genericCredential' && mcpCredentialId)
+        ? await resolveCredentialAuth(mcpCredentialId)
+        : { headers: {}, query: {} };
+      const url = appendQueryParams(mcpServerUrl, mcpAuth.query);
+      const { openMcpClientSession } = await import('./mcp.js');
+      const session = await openMcpClientSession(url, mcpAuth.headers);
+      mcpSession = session;
+      openaiTools = toOpenAI(await session.listTools());
+      callTool = async (name, args) => {
+        const result: any = await session.callTool(name, args);
+        return result?.content?.[0]?.text ?? JSON.stringify(result ?? {});
+      };
+    } else if (mcpServerId) {
+      const { dispatchMcpRpc } = await import('./mcp.js');
+      const { getMcpServerById } = await import('./db.js');
+      const server = await getMcpServerById(mcpServerId);
+      if (!server) throw new Error(`AI Agent error: MCP server "${mcpServerId}" not found`);
+      const scope = { workflowIds: server.workflow_ids, exposeSystemTools: server.expose_system_tools };
+      const listed = await dispatchMcpRpc({ jsonrpc: '2.0', id: 0, method: 'tools/list' }, scope);
+      openaiTools = toOpenAI(listed.payload?.result?.tools || []);
+      callTool = async (name, args) => {
+        const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 0, method: 'tools/call', params: { name, arguments: args } }, scope);
+        if (r.payload?.error) return 'error: ' + r.payload.error.message;
+        return r.payload?.result?.content?.[0]?.text ?? JSON.stringify(r.payload?.result ?? {});
+      };
+    }
+
+    const messages: any[] = [];
+    if (systemPrompt) messages.push({ role: 'system', content: String(systemPrompt) });
+    messages.push({ role: 'user', content: String(userMessage) });
+
+    const maxIter = Math.max(1, Math.min(20, Number(maxIterations) || 5));
+    const temp = Number(temperature);
+    const llmTimeout = Math.max(5000, Number(timeoutMs) || 120000);
+    const trace: any[] = [];
+    let answer = '';
+    let hitCap = true;
+
+    const chatUrl = `${llmEndpoint.replace(/\/$/, '')}/chat/completions`;
+
+    try {
+    for (let i = 0; i < maxIter; i++) {
+      const body: any = { model, messages, temperature: isNaN(temp) ? 0 : temp, stream: false };
+      if (openaiTools.length) { body.tools = openaiTools; body.tool_choice = 'auto'; }
+
+      // Abort a hung LLM call instead of blocking the workflow. The timer stays armed
+      // through the body read (a server can send headers then stall the stream).
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), llmTimeout);
+      let data: any;
+      try {
+        const res = await fetch(chatUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
+        if (!res.ok) {
+          const t = await res.text();
+          throw new Error(`AI Agent LLM error: HTTP ${res.status} ${t.slice(0, 200)}`);
+        }
+        data = await res.json();
+      } catch (err: any) {
+        if (err?.name === 'AbortError') throw new Error(`AI Agent error: LLM call timed out after ${llmTimeout}ms`);
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
+      const msg = data.choices?.[0]?.message;
+      if (!msg) throw new Error('AI Agent error: no message in LLM response');
+
+      if (!msg.tool_calls || msg.tool_calls.length === 0) {
+        answer = msg.content || '';
+        hitCap = false;
+        break;
+      }
+
+      messages.push(msg);
+      for (const tc of msg.tool_calls) {
+        let args: any = {};
+        try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* leave empty */ }
+        let resultText = '';
+        try {
+          resultText = callTool ? await callTool(tc.function.name, args) : 'error: no toolset configured';
+        } catch (e: any) {
+          resultText = 'error: ' + e.message;
+        }
+        trace.push({ tool: tc.function.name, arguments: args, result: resultText.slice(0, 2000) });
+        messages.push({ role: 'tool', tool_call_id: tc.id, content: String(resultText).slice(0, 4000) });
+      }
+    }
+    } finally {
+      mcpSession?.close();
+    }
+
+    return { answer, iterations: trace.length, hitMaxIterations: hitCap && trace.length > 0, toolCalls: trace };
+  }
+};
+
 class NodeRegistryClass {
   private registry = new Map<string, LibreFlowNodeDefinition>();
 
@@ -855,6 +1266,7 @@ class NodeRegistryClass {
     this.register(loopNode);
     this.register(mcpToolCallNode);
     this.register(dataTableNode);
+    this.register(aiAgentNode);
   }
 
   register(node: LibreFlowNodeDefinition) {

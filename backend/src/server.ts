@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import { WorkflowEngine } from './engine.js';
 import { executeWorkflowAndRecord } from './executor.js';
 import { 
@@ -27,16 +28,34 @@ import {
   getDataTableRows,
   addDataTableRow,
   updateDataTableRow,
-  deleteDataTableRow
+  deleteDataTableRow,
+  getMcpServers,
+  getMcpServerById,
+  saveMcpServer,
+  deleteMcpServer
 } from './db.js';
 import { triggerManager } from './triggerManager.js';
 import { NodeRegistry } from './registry.js';
-import mcpRouter from './mcp.js';
+import mcpRouter, { publicMcpRouter } from './mcp.js';
 import { requireAuth, verifyWebhookSignature } from './auth.js';
 import { rateLimit } from './security.js';
+import crypto from 'crypto';
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// Gzip/deflate responses — meaningful for large JSON payloads (execution reports,
+// tools/list, data-table rows). SSE (text/event-stream) is excluded: compression buffers
+// and would stall the MCP SSE handshake / streamed responses.
+app.use(
+  compression({
+    filter: (req, res) => {
+      const type = res.getHeader('Content-Type');
+      if (typeof type === 'string' && type.includes('text/event-stream')) return false;
+      return compression.filter(req, res);
+    },
+  })
+);
 
 // CORS: restrict to an explicit allowlist in production; permissive in dev.
 const corsOrigins = process.env.LF_CORS_ORIGINS;
@@ -69,6 +88,10 @@ app.use(
 // All /api routes (including MCP) require authentication. Webhooks use HMAC instead.
 app.use('/api', requireAuth);
 app.use('/api/mcp', mcpRouter);
+
+// Named MCP servers are reachable at their own public URL (/mcp/:id/...), outside
+// the /api auth layer — each enforces its own per-server bearer token instead.
+app.use('/mcp', publicMcpRouter);
 
 const engine = new WorkflowEngine();
 
@@ -154,7 +177,7 @@ app.get('/api/workflows/:id', async (req, res) => {
 
 app.post('/api/workflows', async (req, res) => {
   try {
-    const { id, name, nodes, connections, onErrorWorkflowId } = req.body;
+    const { id, name, nodes, connections, onErrorWorkflowId, description } = req.body;
     if (!id || !name) {
       return res.status(400).json({ error: 'Workflow id and name are required' });
     }
@@ -169,7 +192,7 @@ app.post('/api/workflows', async (req, res) => {
     const existingWorkflow = await getWorkflowById(id);
     const wasActive = existingWorkflow ? !!existingWorkflow.active : false;
 
-    await saveWorkflow(id, name, nodes || [], connections || [], onErrorWorkflowId);
+    await saveWorkflow(id, name, nodes || [], connections || [], onErrorWorkflowId, description);
 
     if (wasActive) {
       const updatedWorkflow = await getWorkflowById(id);
@@ -378,11 +401,11 @@ app.get('/api/data-tables/:id', async (req, res) => {
 
 app.post('/api/data-tables', async (req, res) => {
   try {
-    const { id, name, columns } = req.body;
+    const { id, name, columns, keyColumn } = req.body;
     if (!id || !name || !Array.isArray(columns)) {
       return res.status(400).json({ error: 'id, name, and columns (array) are required' });
     }
-    await saveDataTable(id, name, columns);
+    await saveDataTable(id, name, columns, keyColumn || null);
     return res.json({ success: true, message: 'Data Table saved successfully' });
   } catch (err: any) {
     return serverError(res, err);
@@ -439,6 +462,66 @@ app.put('/api/data-tables/:id/rows/:rowId', async (req, res) => {
 app.delete('/api/data-tables/:id/rows/:rowId', async (req, res) => {
   try {
     await deleteDataTableRow(req.params.rowId);
+    return res.json({ success: true });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+// MCP SERVERS CRUD — named servers exposing a curated group of workflows as MCP tools.
+function generateMcpToken(): string {
+  return crypto.randomBytes(24).toString('hex');
+}
+
+app.get('/api/mcp-servers', async (req, res) => {
+  try {
+    return res.json(await getMcpServers());
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+app.get('/api/mcp-servers/:id', async (req, res) => {
+  try {
+    const server = await getMcpServerById(req.params.id);
+    if (!server) return res.status(404).json({ error: 'MCP server not found' });
+    return res.json(server);
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+app.post('/api/mcp-servers', async (req, res) => {
+  try {
+    const { id, name, workflowIds = [], requireAuth: ra = true, exposeSystemTools = false, regenerateToken = false } = req.body;
+    if (!name || typeof name !== 'string') {
+      return res.status(400).json({ error: 'name is required' });
+    }
+    if (!Array.isArray(workflowIds)) {
+      return res.status(400).json({ error: 'workflowIds must be an array' });
+    }
+    // A public (no-token) server must not expose the system tools — that would put
+    // destructive tools (delete_workflow, delete_data_table) on an unauthenticated URL.
+    if (!ra && exposeSystemTools) {
+      return res.status(400).json({ error: 'A public MCP server (requireAuth=false) cannot expose system tools. Enable a token or disable system tools.' });
+    }
+
+    const existing = id ? await getMcpServerById(id) : null;
+    const serverId = existing ? existing.id : `mcps-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    // A token is always generated and kept so auth can be toggled on later without losing it.
+    let token: string | null = existing ? existing.token : generateMcpToken();
+    if (regenerateToken || !token) token = generateMcpToken();
+
+    await saveMcpServer(serverId, name, workflowIds, token, !!ra, !!exposeSystemTools);
+    return res.json(await getMcpServerById(serverId));
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+app.delete('/api/mcp-servers/:id', async (req, res) => {
+  try {
+    await deleteMcpServer(req.params.id);
     return res.json({ success: true });
   } catch (err: any) {
     return serverError(res, err);

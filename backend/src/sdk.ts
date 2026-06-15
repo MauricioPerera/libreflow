@@ -12,7 +12,7 @@ export interface NodeParameterSchema {
 export interface LibreFlowNodeDefinition {
   type: string;
   displayName: string;
-  category: 'Trigger' | 'Data' | 'Flow' | 'Utility' | 'Integration';
+  category: 'Trigger' | 'Data' | 'Flow' | 'Utility' | 'Integration' | 'AI';
   icon: string;
   description: string;
   ui?: {

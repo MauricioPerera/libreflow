@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executeWorkflowAndRecord } from '../src/executor.js';
+import { executeWorkflowAndRecord, execStack } from '../src/executor.js';
 import { getWorkflowById, saveExecution } from '../src/db.js';
 
 // Mock the db module
@@ -14,6 +14,21 @@ vi.mock('../src/db.js', () => {
 describe('executeWorkflowAndRecord', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('rejects a re-entrant execution of the same workflow id (anti-deadlock guard)', async () => {
+    const wf = { id: 'wf-reentrant', name: 'Re', nodes: [{ id: 't', type: 'trigger', name: 'Start', parameters: {} }], connections: [] };
+    // Simulate being already inside this workflow's execution context.
+    await expect(
+      execStack.run(new Set(['wf-reentrant']), () => executeWorkflowAndRecord(wf, {}))
+    ).rejects.toThrow(/Re-entrant/);
+  });
+
+  it('allows nested execution of a DIFFERENT workflow id', async () => {
+    vi.mocked(saveExecution).mockResolvedValue(undefined as any);
+    const wf = { id: 'wf-other', name: 'Other', nodes: [{ id: 't', type: 'trigger', name: 'Start', parameters: {} }], connections: [] };
+    const report = await execStack.run(new Set(['wf-parent']), () => executeWorkflowAndRecord(wf, {}));
+    expect(report.success).toBe(true);
   });
 
   it('serializes concurrent executions of the same workflow id', async () => {
