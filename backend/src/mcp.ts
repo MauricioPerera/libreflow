@@ -25,6 +25,25 @@ import {
 
 // Default cap on rows/items returned to an agent — protects its context window.
 const AGENT_ROW_LIMIT = 50;
+
+/**
+ * Builds a data tool result with BOTH a compact text representation (works with any
+ * client) and `structuredContent` (spec 2025) so agents parse data reliably without
+ * extracting JSON from prose. structuredContent must be an object, so non-objects wrap.
+ */
+function dataResult(id: any, data: any) {
+  const structuredContent = data !== null && typeof data === 'object' && !Array.isArray(data)
+    ? data
+    : { result: data };
+  return {
+    status: 200,
+    payload: {
+      jsonrpc: '2.0',
+      id,
+      result: { content: [{ type: 'text', text: JSON.stringify(data) }], structuredContent },
+    },
+  };
+}
 import { NodeRegistry } from './registry.js';
 import { assertSafeUrl } from './security.js';
 import { constantTimeEqual } from './auth.js';
@@ -698,13 +717,13 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
             const { execute, ...meta } = nodeDef;
             return meta;
           });
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(list) }] } } };
+          return dataResult(id, list);
         }
 
         if (toolName === 'libreflow_list_workflows') {
           const list = await getWorkflows();
           const cleanList = list.map(w => ({ id: w.id, name: w.name, active: w.active }));
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(cleanList) }] } } };
+          return dataResult(id, cleanList);
         }
 
         if (toolName === 'libreflow_get_workflow') {
@@ -716,7 +735,7 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
           if (!workflow) {
             return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Workflow not found with ID: ${wId}` }] } } };
           }
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(workflow) }] } } };
+          return dataResult(id, workflow);
         }
 
         if (toolName === 'libreflow_save_workflow') {
@@ -740,13 +759,13 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
           }
           const { executeWorkflowAndRecord } = await import('./executor.js');
           const report = await executeWorkflowAndRecord(workflow, payload);
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(report) }] } } };
+          return dataResult(id, report);
         }
 
         if (toolName === 'libreflow_list_executions') {
           const list = await getAllExecutions();
           const out = { returned: list.length, truncated: list.length >= 100, executions: list };
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(out) }] } } };
+          return dataResult(id, out);
         }
 
         if (toolName === 'libreflow_get_execution') {
@@ -758,18 +777,18 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
           if (!execution) {
             return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Execution not found with ID: ${execId}` }] } } };
           }
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(execution) }] } } };
+          return dataResult(id, execution);
         }
 
         if (toolName === 'libreflow_validate_workflow') {
           const { nodes = [], connections = [] } = toolArguments;
           const result = validateWorkflow(nodes, connections);
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } } };
+          return dataResult(id, result);
         }
 
         if (toolName === 'libreflow_list_data_tables') {
           const list = await getDataTables();
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(list) }] } } };
+          return dataResult(id, list);
         }
 
         if (toolName === 'libreflow_create_data_table') {
@@ -788,7 +807,7 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
             return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId or data parameter' } } };
           }
           const row = await upsertDataTableRow(tId, data);
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(row) }] } } };
+          return dataResult(id, row);
         }
 
         if (toolName === 'libreflow_increment_data_table_row') {
@@ -797,7 +816,7 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
             return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId, key or field parameter' } } };
           }
           const row = await incrementDataTableRow(tId, String(key), field, Number(amount) || 1);
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(row) }] } } };
+          return dataResult(id, row);
         }
 
         if (toolName === 'libreflow_get_data_table_row') {
@@ -806,7 +825,7 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
             return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId or key parameter' } } };
           }
           const row = await getOrCreateDataTableRow(tId, String(key), defaults && typeof defaults === 'object' ? defaults : {});
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(row) }] } } };
+          return dataResult(id, row);
         }
 
         if (toolName === 'libreflow_query_data_table_rows') {
@@ -817,7 +836,7 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
           const effLimit = Math.min(1000, Math.max(1, Number(limit) || AGENT_ROW_LIMIT));
           const rows = await queryDataTableRows(tId, Array.isArray(filters) ? filters : [], { sort, limit: effLimit });
           const out = { returned: rows.length, limit: effLimit, truncated: rows.length >= effLimit, rows };
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(out) }] } } };
+          return dataResult(id, out);
         }
 
         if (toolName === 'libreflow_get_data_table_rows') {
@@ -830,7 +849,7 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
           const total = await countDataTableRows(tId);
           const rows = await getDataTableRows(tId, limit, offset);
           const out = { total, returned: rows.length, offset, truncated: offset + rows.length < total, rows };
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(out) }] } } };
+          return dataResult(id, out);
         }
 
         if (toolName === 'libreflow_add_data_table_rows') {
@@ -891,7 +910,7 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
             }
             return true;
           });
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(filtered) }] } } };
+          return dataResult(id, filtered);
         }
 
         if (toolName === 'libreflow_update_data_table_row') {
