@@ -18,10 +18,10 @@ describe('Data table rich queries (operators, sort, limit)', () => {
       { name: 'status', type: 'string' },
     ]);
     const rows = [
-      { name: 'ana', score: 10, status: 'active' },
-      { name: 'beto', score: 80, status: 'pending' },
-      { name: 'carla', score: 55, status: 'active' },
-      { name: 'dora', score: 90, status: 'inactive' },
+      { name: 'ana', score: 10, status: 'active', zip: '01234' },
+      { name: 'beto', score: 80, status: 'pending', zip: '00500' },
+      { name: 'carla', score: 55, status: 'active', zip: '01234' },
+      { name: 'dora', score: 90, status: 'inactive', zip: '99999' },
     ];
     for (const [i, r] of rows.entries()) {
       await addDataTableRow(tableId, `q-${i}-${Date.now()}`, r);
@@ -50,6 +50,16 @@ describe('Data table rich queries (operators, sort, limit)', () => {
   it('in: status in [active, pending]', async () => {
     const rows = await queryDataTableRows(tableId, [{ column: 'status', op: 'in', value: ['active', 'pending'] }]);
     expect(rows.map(r => r.data.name).sort()).toEqual(['ana', 'beto', 'carla']);
+  });
+
+  it('eq sobre campo string que parece número (zip con cero a la izquierda)', async () => {
+    const rows = await queryDataTableRows(tableId, [{ column: 'zip', op: 'eq', value: '01234' }]);
+    expect(rows.map(r => r.data.name).sort()).toEqual(['ana', 'carla']);
+  });
+
+  it('eq numérico sigue funcionando contra campo número', async () => {
+    const rows = await queryDataTableRows(tableId, [{ column: 'score', op: 'eq', value: 80 }]);
+    expect(rows.map(r => r.data.name)).toEqual(['beto']);
   });
 
   it('combina filtros + orden desc + límite', async () => {

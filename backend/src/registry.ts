@@ -1212,22 +1212,24 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       const body: any = { model, messages, temperature: isNaN(temp) ? 0 : temp, stream: false };
       if (openaiTools.length) { body.tools = openaiTools; body.tool_choice = 'auto'; }
 
-      // Abort a hung LLM call instead of blocking the whole workflow indefinitely.
+      // Abort a hung LLM call instead of blocking the workflow. The timer stays armed
+      // through the body read (a server can send headers then stall the stream).
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), llmTimeout);
-      let res: Response;
+      let data: any;
       try {
-        res = await fetch(chatUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
+        const res = await fetch(chatUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
+        if (!res.ok) {
+          const t = await res.text();
+          throw new Error(`AI Agent LLM error: HTTP ${res.status} ${t.slice(0, 200)}`);
+        }
+        data = await res.json();
       } catch (err: any) {
-        throw new Error(err?.name === 'AbortError' ? `AI Agent error: LLM call timed out after ${llmTimeout}ms` : `AI Agent error: ${err?.message || err}`);
+        if (err?.name === 'AbortError') throw new Error(`AI Agent error: LLM call timed out after ${llmTimeout}ms`);
+        throw err;
       } finally {
         clearTimeout(timer);
       }
-      if (!res.ok) {
-        const t = await res.text();
-        throw new Error(`AI Agent LLM error: HTTP ${res.status} ${t.slice(0, 200)}`);
-      }
-      const data = await res.json();
       const msg = data.choices?.[0]?.message;
       if (!msg) throw new Error('AI Agent error: no message in LLM response');
 

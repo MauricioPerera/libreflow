@@ -187,7 +187,7 @@ export async function saveWorkflow(id: string, name: string, nodes: any, connect
     if (existing) {
       await db.run(
         'UPDATE workflows SET name = ?, nodes = ?, connections = ?, onErrorWorkflowId = ?, description = COALESCE(?, description), updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-        [name, nodesStr, connectionsStr, onErrorWorkflowId || null, description === undefined ? null : desc, id]
+        [name, nodesStr, connectionsStr, onErrorWorkflowId || null, desc, id]
       );
     } else {
       await db.run(
@@ -481,8 +481,10 @@ export async function upsertDataTableRow(tableId: string, data: Record<string, a
     [id, tableId, rowKey, JSON.stringify(data)]
   );
   const row = await db.get('SELECT * FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
-  emitRowEvent(tableId, row.id, existed ? 'update' : 'insert', JSON.parse(row.data));
-  return { id: row.id, table_id: tableId, key: rowKey, data: JSON.parse(row.data) };
+  if (!row) throw new Error('Upserted row not found (concurrent delete?).');
+  const parsed = JSON.parse(row.data);
+  emitRowEvent(tableId, row.id, existed ? 'update' : 'insert', parsed);
+  return { id: row.id, table_id: tableId, key: rowKey, data: parsed };
 }
 
 /**
@@ -492,6 +494,9 @@ export async function upsertDataTableRow(tableId: string, data: Record<string, a
 export async function incrementDataTableRow(tableId: string, key: string, field: string, amount = 1) {
   const keyColumn = await getTableKeyColumn(tableId);
   if (!keyColumn) throw new Error('Increment requires the data table to have a key column.');
+  // The field must be a top-level key: json_object() stores it literally while json_set()
+  // would treat '.'/'['/'$' as a nested path, so a dotted name would split the counter.
+  if (/[.[\]$]/.test(field)) throw new Error(`Increment field must be a top-level field name (got "${field}").`);
   const rowKey = String(key);
   const existed = hasRowSubscribers(tableId)
     ? await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey])
@@ -506,8 +511,10 @@ export async function incrementDataTableRow(tableId: string, key: string, field:
     [id, tableId, rowKey, keyColumn, key, field, amount, field, field, amount]
   );
   const row = await db.get('SELECT * FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
-  emitRowEvent(tableId, row.id, existed ? 'update' : 'insert', JSON.parse(row.data));
-  return { id: row.id, table_id: tableId, key: rowKey, data: JSON.parse(row.data) };
+  if (!row) throw new Error('Incremented row not found (concurrent delete?).');
+  const parsed = JSON.parse(row.data);
+  emitRowEvent(tableId, row.id, existed ? 'update' : 'insert', parsed);
+  return { id: row.id, table_id: tableId, key: rowKey, data: parsed };
 }
 
 /** Returns the row with the given key, or inserts `defaults` and returns it if absent. */
@@ -527,8 +534,10 @@ export async function getOrCreateDataTableRow(tableId: string, key: string, defa
     [id, tableId, rowKey, JSON.stringify(data)]
   );
   const row = await db.get('SELECT * FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
-  emitRowEvent(tableId, row.id, 'insert', JSON.parse(row.data));
-  return { id: row.id, table_id: tableId, key: rowKey, data: JSON.parse(row.data), created: true };
+  if (!row) throw new Error('Row not found after get-or-create (concurrent delete?).');
+  const parsed = JSON.parse(row.data);
+  emitRowEvent(tableId, row.id, 'insert', parsed);
+  return { id: row.id, table_id: tableId, key: rowKey, data: parsed, created: true };
 }
 
 const QUERY_OPS: Record<string, string> = {
@@ -558,17 +567,24 @@ export async function queryDataTableRows(tableId: string, filters: QueryFilter[]
   let sql = 'SELECT * FROM data_table_rows WHERE table_id = ?';
   const args: any[] = [tableId];
 
+  // Equality/membership compare as TEXT so string fields that look numeric (e.g. a zip
+  // "01234") and real numbers both match; ordering operators compare numerically.
+  const textVal = (v: any) => (v === true || v === 'true') ? '1' : (v === false || v === 'false') ? '0' : String(v);
   for (const f of filters || []) {
     if (!f || !f.column) continue;
     const op = String(f.op || 'eq');
     if (op === 'contains') {
-      sql += ` AND json_extract(data, '$.' || ?) LIKE ?`;
+      sql += ` AND CAST(json_extract(data, '$.' || ?) AS TEXT) LIKE ?`;
       args.push(f.column, `%${f.value}%`);
     } else if (op === 'in') {
-      const vals = Array.isArray(f.value) ? f.value : String(f.value ?? '').split(',').map(s => s.trim());
+      const vals = (Array.isArray(f.value) ? f.value : String(f.value ?? '').split(',').map(s => s.trim()))
+        .filter((v: any) => String(v) !== '');
       if (vals.length === 0) continue;
-      sql += ` AND json_extract(data, '$.' || ?) IN (${vals.map(() => '?').join(',')})`;
-      args.push(f.column, ...vals.map(coerceQueryValue));
+      sql += ` AND CAST(json_extract(data, '$.' || ?) AS TEXT) IN (${vals.map(() => '?').join(',')})`;
+      args.push(f.column, ...vals.map(textVal));
+    } else if (op === 'eq' || op === 'ne') {
+      sql += ` AND CAST(json_extract(data, '$.' || ?) AS TEXT) ${QUERY_OPS[op]} ?`;
+      args.push(f.column, textVal(f.value));
     } else {
       sql += ` AND json_extract(data, '$.' || ?) ${QUERY_OPS[op] || '='} ?`;
       args.push(f.column, coerceQueryValue(f.value));

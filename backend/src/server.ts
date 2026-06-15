@@ -500,6 +500,11 @@ app.post('/api/mcp-servers', async (req, res) => {
     if (!Array.isArray(workflowIds)) {
       return res.status(400).json({ error: 'workflowIds must be an array' });
     }
+    // A public (no-token) server must not expose the system tools — that would put
+    // destructive tools (delete_workflow, delete_data_table) on an unauthenticated URL.
+    if (!ra && exposeSystemTools) {
+      return res.status(400).json({ error: 'A public MCP server (requireAuth=false) cannot expose system tools. Enable a token or disable system tools.' });
+    }
 
     const existing = id ? await getMcpServerById(id) : null;
     const serverId = existing ? existing.id : `mcps-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
