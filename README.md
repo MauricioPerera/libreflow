@@ -2,12 +2,27 @@
 
 A self-hosted, visual **workflow-automation** tool (an n8n-style engine). Build flows
 on a node canvas, run them manually / on a schedule / via webhook, and expose them as
-MCP tools. Monorepo with an Express + SQLite backend and a Vue 3 + Vue Flow frontend.
+MCP tools. Workflows are also a **state engine** (data tables with atomic ops + reactive
+triggers) and can run an **AI agent** node whose tools are your own workflows. Monorepo
+with an Express + SQLite backend and a Vue 3 + Vue Flow frontend.
+
+## Highlights
+
+- **12 node types** incl. `aiAgent` (LLM tool-calling loop), `mcpToolCall` (MCP client),
+  `dataTable`, loops, sub-workflows, HTTP, JS code.
+- **MCP server, both ways** — expose the whole platform globally, or a curated **named
+  server** (group of workflows as tools on its own token-protected URL). Standards-compliant
+  **Streamable HTTP** transport via the official `@modelcontextprotocol/sdk`.
+- **Data-table state engine** — unique-key idempotency, atomic `upsert` / `increment` /
+  get-or-default, rich queries (operators + sort + limit), and **reactive triggers** (run a
+  flow on row insert/update).
 
 ## Stack
 
-- **Backend** (`backend/`) — Node + Express + TypeScript, SQLite, `node-cron`. Port **3000**.
-- **Frontend** (`frontend/`) — Vue 3 + Vue Flow + Vite. Port **5173** (proxies `/api` → backend).
+- **Backend** (`backend/`) — Node + Express + TypeScript, SQLite (WAL), `node-cron`,
+  `@modelcontextprotocol/sdk`. Port **3000**.
+- **Frontend** (`frontend/`) — Vue 3 + Vue Flow + Vite. Port **5173** (proxies `/api` and
+  `/mcp` → backend).
 
 ## Prerequisites
 
@@ -64,8 +79,15 @@ All under `/api` (require `x-api-key` when `LF_API_KEY` is set):
 - `POST /api/workflows/run` — run an ad-hoc workflow `{ workflow, payload }`
 - `GET|POST|DELETE /api/workflows[/:id]` — workflow CRUD (+ `/:id/active`, `/:id/versions`)
 - `GET /api/executions[/:id]`, `GET /api/workflows/:id/executions` — run history
+- `GET|POST|DELETE /api/mcp-servers[/:id]` — named MCP servers (curated workflow groups)
+- `GET|POST|DELETE /api/credentials[/:id]`, `GET|POST|DELETE /api/data-tables[/:id]` (+ `/rows`)
 - `*  /hooks/:workflowId` — webhook trigger (HMAC-verified when `LF_WEBHOOK_SECRET` is set)
-- credentials, data-tables, and MCP routes under `/api/...`
+
+MCP endpoints (JSON-RPC, Streamable HTTP):
+
+- `POST /api/mcp` — global MCP server (all active workflows + `libreflow_*` system tools)
+- `POST /mcp/:serverId` — a **named** MCP server's URL (its workflow group as tools,
+  protected by a per-server bearer token unless marked public). Mounted outside `/api` auth.
 
 Workflow shape: `nodes[] = {id,type,name,parameters}`, `connections[] =
 {source,target,sourceHandle?,targetHandle?}`. Expressions use
@@ -75,5 +97,8 @@ Workflow shape: `nodes[] = {id,type,name,parameters}`, `connections[] =
 
 - `jsCode` runs arbitrary code with full host access — disabled by default in production
   (`LF_ENABLE_JS_CODE=true` to opt in on a trusted instance).
-- Outbound requests (httpRequest / MCP) are SSRF-guarded; private IPs blocked in production.
+- Outbound requests (httpRequest / MCP / aiAgent LLM) are SSRF-guarded; private IPs blocked
+  in production.
 - Credentials are encrypted at rest (AES-256-GCM); the API never returns decrypted secrets.
+- Named MCP servers use a per-server bearer token (constant-time compared); a **public**
+  (no-token) server may not expose the destructive `libreflow_*` system tools.
