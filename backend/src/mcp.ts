@@ -1015,24 +1015,37 @@ router.get('/client/tools', async (req, res) => {
  * Streamable HTTP transport first and falls back to the legacy SSE transport, so the
  * `mcpToolCall` node can consume any standard MCP server. SSRF-guarded before connecting.
  */
-async function connectMcpClient(serverUrl: string): Promise<McpSdkClient> {
+async function connectMcpClient(serverUrl: string, headers?: Record<string, string>): Promise<McpSdkClient> {
   await assertSafeUrl(serverUrl); // SSRF guard
   const url = new URL(serverUrl);
 
+  // Inject auth headers (when provided) into EVERY request via a custom fetch — this
+  // also covers the SSE GET stream, which doesn't go through requestInit.
+  const hasHeaders = !!headers && Object.keys(headers).length > 0;
+  const opts: any = {};
+  if (hasHeaders) {
+    opts.requestInit = { headers };
+    opts.fetch = (input: any, init: any = {}) => {
+      const h = new Headers(init.headers || {});
+      for (const [k, v] of Object.entries(headers!)) h.set(k, v);
+      return fetch(input, { ...init, headers: h });
+    };
+  }
+
   try {
     const client = new McpSdkClient({ name: 'LibreFlow-Client', version: '1.0.0' }, { capabilities: {} });
-    await client.connect(new StreamableHTTPClientTransport(url));
+    await client.connect(new StreamableHTTPClientTransport(url, opts));
     return client;
   } catch {
     // Older servers only speak the deprecated HTTP+SSE transport — retry with a fresh client.
     const client = new McpSdkClient({ name: 'LibreFlow-Client', version: '1.0.0' }, { capabilities: {} });
-    await client.connect(new SSEClientTransport(url));
+    await client.connect(new SSEClientTransport(url, opts));
     return client;
   }
 }
 
-export async function fetchToolsFromMcpServer(serverUrl: string): Promise<any[]> {
-  const client = await connectMcpClient(serverUrl);
+export async function fetchToolsFromMcpServer(serverUrl: string, headers?: Record<string, string>): Promise<any[]> {
+  const client = await connectMcpClient(serverUrl, headers);
   try {
     const res = await client.listTools();
     return res.tools || [];
@@ -1041,8 +1054,8 @@ export async function fetchToolsFromMcpServer(serverUrl: string): Promise<any[]>
   }
 }
 
-export async function executeMcpToolCall(serverUrl: string, toolName: string, toolArguments: Record<string, any>): Promise<any> {
-  const client = await connectMcpClient(serverUrl);
+export async function executeMcpToolCall(serverUrl: string, toolName: string, toolArguments: Record<string, any>, headers?: Record<string, string>): Promise<any> {
+  const client = await connectMcpClient(serverUrl, headers);
   try {
     return await client.callTool({ name: toolName, arguments: toolArguments });
   } finally {

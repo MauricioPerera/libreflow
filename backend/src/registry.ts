@@ -664,6 +664,22 @@ const mcpToolCallNode: LibreFlowNodeDefinition = {
       description: 'Acepta servidores MCP estándar: Streamable HTTP (transporte actual) o SSE (legacy).'
     },
     {
+      name: 'authentication',
+      label: 'Autenticación',
+      type: 'options',
+      default: 'none',
+      options: [
+        { label: 'Ninguna', value: 'none' },
+        { label: 'Credencial Genérica', value: 'genericCredential' }
+      ]
+    },
+    {
+      name: 'credentialId',
+      label: 'Credencial Asociada',
+      type: 'options',
+      default: ''
+    },
+    {
       name: 'toolName',
       label: 'Nombre de la Herramienta',
       type: 'options',
@@ -678,7 +694,7 @@ const mcpToolCallNode: LibreFlowNodeDefinition = {
     }
   ],
   execute: async (params) => {
-    const { serverUrl, toolName, arguments: argsList } = params;
+    const { serverUrl, toolName, arguments: argsList, authentication = 'none', credentialId } = params;
     if (!serverUrl || !toolName) {
       throw new Error('MCP Tool Call Node error: serverUrl and toolName are required');
     }
@@ -703,7 +719,34 @@ const mcpToolCallNode: LibreFlowNodeDefinition = {
       Object.assign(argsObj, argsList);
     }
 
-    return await executeMcpToolCall(serverUrl, toolName, argsObj);
+    // Resolve auth from the encrypted credentials vault (same scheme as httpRequest):
+    // basicAuth -> Authorization: Basic; apiKey -> custom header or query parameter.
+    let requestUrl = serverUrl;
+    const headers: Record<string, string> = {};
+    if (authentication === 'genericCredential' && credentialId) {
+      const cred = await getCredentialById(credentialId);
+      if (cred && cred.data) {
+        if (cred.type === 'basicAuth') {
+          const { user = '', password = '' } = cred.data;
+          headers['Authorization'] = 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
+        } else if (cred.type === 'apiKey') {
+          const { name = '', value = '', in: keyIn = 'header' } = cred.data;
+          if (name && value) {
+            if (keyIn === 'query') {
+              const parsedUrl = new URL(serverUrl);
+              parsedUrl.searchParams.append(name, value);
+              requestUrl = parsedUrl.toString();
+            } else {
+              headers[name] = value;
+            }
+          }
+        }
+      } else {
+        console.warn(`[Node: mcpToolCall] Credential not found or failed to load: ${credentialId}`);
+      }
+    }
+
+    return await executeMcpToolCall(requestUrl, toolName, argsObj, headers);
   }
 };
 

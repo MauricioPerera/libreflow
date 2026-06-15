@@ -10,10 +10,12 @@ import { executeMcpToolCall, fetchToolsFromMcpServer } from '../src/mcp.js';
 
 // Spins up a real in-process MCP server (Streamable HTTP, stateless) exposing an `echo`
 // tool that returns the arguments it received — used to exercise the SDK-based client.
-function startEchoServer(): Promise<{ url: string; close: () => void }> {
+function startEchoServer(): Promise<{ url: string; close: () => void; lastAuth: () => string | undefined }> {
   const app = express();
   app.use(express.json());
+  let lastAuth: string | undefined;
   app.post('/mcp', async (req, res) => {
+    lastAuth = req.headers.authorization as string | undefined;
     const server = new SdkServer({ name: 'echo', version: '1.0.0' }, { capabilities: { tools: {} } });
     server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [{ name: 'echo', description: 'Devuelve los argumentos recibidos', inputSchema: { type: 'object' } }],
@@ -29,7 +31,7 @@ function startEchoServer(): Promise<{ url: string; close: () => void }> {
   return new Promise((resolve) => {
     const srv = app.listen(0, () => {
       const port = (srv.address() as any).port;
-      resolve({ url: `http://127.0.0.1:${port}/mcp`, close: () => srv.close() });
+      resolve({ url: `http://127.0.0.1:${port}/mcp`, close: () => srv.close(), lastAuth: () => lastAuth });
     });
   });
 }
@@ -77,7 +79,10 @@ vi.mock('../src/db.js', () => {
     ],
     addDataTableRow: async (tableId: string, rowId: string, data: any) => {},
     updateDataTableRow: async (rowId: string, data: any) => {},
-    deleteDataTableRow: async (rowId: string) => {}
+    deleteDataTableRow: async (rowId: string) => {},
+    getCredentialById: async (id: string) => id === 'cred-mcp'
+      ? { id: 'cred-mcp', name: 'MCP Token', type: 'apiKey', data: { name: 'Authorization', value: 'Bearer secreto-123', in: 'header' } }
+      : null,
   };
 });
 
@@ -170,6 +175,23 @@ describe('MCP Server & Client Integration', () => {
       };
       const outputRaw = await executeNode(nodeObjRaw, {});
       expect(JSON.parse(outputRaw.content[0].text)).toEqual({ nombre: 'Diego', edad: 30 });
+    });
+
+    it('aplica la credencial del vault como header Authorization', async () => {
+      const node = {
+        id: 'node-mcp-auth',
+        type: 'mcpToolCall',
+        name: 'McpAuth',
+        parameters: {
+          serverUrl: echo.url,
+          toolName: 'echo',
+          authentication: 'genericCredential',
+          credentialId: 'cred-mcp',
+          arguments: [{ key: 'x', value: '1' }],
+        },
+      };
+      await executeNode(node, {});
+      expect(echo.lastAuth()).toBe('Bearer secreto-123');
     });
   });
 
