@@ -300,6 +300,7 @@
               :readOnly="isPreviewMode"
               @update-params="updateNodeParams"
               @update-name="updateNodeName"
+              @set-pin="setNodePin"
               @close="selectedNode = null"
               @open-expression-editor="handleOpenExpressionEditor"
             />
@@ -819,6 +820,17 @@ const updateNodeName = (name: string) => {
   }
 };
 
+// Fija (o quita) la salida de un nodo (pin data). value=null quita el pin.
+const setNodePin = (value: any) => {
+  if (!selectedNode.value) return;
+  if (value === null) {
+    delete selectedNode.value.data.pinData;
+  } else {
+    selectedNode.value.data.pinData = value;
+  }
+  isDirty.value = true;
+};
+
 // Nested value setter utility for expression updates
 const handleOpenExpressionEditor = (field: string, label: string, val: string) => {
   if (selectedNode.value) {
@@ -948,10 +960,11 @@ const loadWorkflowForEdit = async (workflowId: string) => {
         : { x: 280 + idx * 240, y: 220 },
       data: {
         name: n.name,
-        parameters: n.parameters || {}
+        parameters: n.parameters || {},
+        ...(n.pinData !== undefined ? { pinData: n.pinData } : {})
       }
     }));
-    
+
     edges.value = (workflow.connections || []).map((c: any, idx: number) => ({
       id: c.id || `e-${c.source}-${c.target}-${idx}`,
       source: c.source,
@@ -1104,7 +1117,8 @@ const saveWorkflowToDb = async () => {
       type: n.type,
       name: n.data.name,
       parameters: n.data.parameters,
-      position: n.position // Save node position coordinates
+      position: n.position, // Save node position coordinates
+      ...(n.data.pinData !== undefined ? { pinData: n.data.pinData } : {})
     })),
     connections: edges.value.map(e => ({
       source: e.source,
@@ -1220,7 +1234,8 @@ const runWorkflow = async () => {
     id: n.id,
     type: n.type,
     name: n.data.name,
-    parameters: n.data.parameters
+    parameters: n.data.parameters,
+    ...(n.data.pinData !== undefined ? { pinData: n.data.pinData } : {})
   }));
 
   const backendConnections = edges.value.map(e => ({
