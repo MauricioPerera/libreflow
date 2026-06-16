@@ -430,30 +430,13 @@
   </div>
 
   <!-- Save Workflow Name Modal -->
-    <div v-if="showSaveModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
-      <div class="modal-content">
-        <h3 class="modal-title">Guardar Flujo</h3>
-        <p class="modal-desc">Asigna un nombre para guardar este flujo de trabajo en la base de datos.</p>
-        <input
-          v-model="newWorkflowName"
-          type="text"
-          class="config-input"
-          placeholder="Nombre del flujo (ej: Mi Flujo De Registro)"
-          style="margin-bottom: 12px;"
-        />
-        <textarea
-          v-model="workflowDescription"
-          class="config-input"
-          rows="2"
-          placeholder="Descripción (opcional) — se usa como descripción de la tool MCP para que un agente la elija mejor"
-          style="margin-bottom: 16px; resize: vertical;"
-        />
-        <div class="modal-actions">
-          <button @click="showSaveModal = false" class="btn btn-secondary">Cancelar</button>
-          <button @click="saveWorkflowToDb" class="btn btn-primary" :disabled="!newWorkflowName.trim()">Guardar</button>
-        </div>
-      </div>
-    </div>
+    <SaveWorkflowModal
+      v-if="showSaveModal"
+      v-model:name="newWorkflowName"
+      v-model:description="workflowDescription"
+      @close="showSaveModal = false"
+      @save="saveWorkflowToDb"
+    />
 
     <!-- Create/Edit Credential Modal -->
     <div v-if="showCredentialModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
@@ -873,6 +856,7 @@ import FlowsView from './components/FlowsView.vue';
 import ExecutionsView from './components/ExecutionsView.vue';
 import DataTablesList from './components/DataTablesList.vue';
 import DataTableDetail from './components/DataTableDetail.vue';
+import SaveWorkflowModal from './components/SaveWorkflowModal.vue';
 import McpServersView from './components/McpServersView.vue';
 import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
