@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns, credentialTypeLabel } from './utils';
+import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns, credentialTypeLabel, mcpServerUrl } from './utils';
+
+describe('mcpServerUrl', () => {
+  it('construye la URL con el origen actual', () => {
+    expect(mcpServerUrl('abc')).toBe(`${window.location.origin}/mcp/abc`);
+  });
+});
 
 describe('statusLabel', () => {
   it('traduce los estados conocidos y deja pasar los desconocidos', () => {
