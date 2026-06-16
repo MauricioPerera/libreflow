@@ -188,11 +188,20 @@
                 </td>
                 <td>
                   <span :class="['status-badge', exec.status]">
-                    {{ exec.status === 'success' ? 'Éxito' : 'Fallo' }}
+                    {{ statusLabel(exec.status) }}
                   </span>
                 </td>
                 <td>{{ formatFullDate(exec.executed_at) }}</td>
-                <td style="text-align: right;">
+                <td style="text-align: right; white-space: nowrap;">
+                  <button
+                    v-if="exec.status === 'failed'"
+                    @click="openAiContext(exec.id)"
+                    class="btn btn-secondary"
+                    style="padding: 6px 12px; font-size: 12px; margin-right: 6px;"
+                    title="Copiar contexto del error para dárselo a una IA"
+                  >
+                    🤖 Contexto IA
+                  </button>
                   <button @click="loadPastExecutionFromDashboard(exec.id, exec.workflow_id)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">
                     Ver Ejecución
                   </button>
@@ -1060,6 +1069,29 @@
         </div>
       </div>
     </div>
+
+    <!-- AI ERROR CONTEXT MODAL -->
+    <div v-if="showAiContextModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
+      <div class="modal-content" style="width: 640px; max-width: 95%;">
+        <h3 class="modal-title">🤖 Contexto del error para la IA</h3>
+        <p class="modal-desc">Instrucción lista para pegar a tu agente/LLM: incluye el flujo, la ejecución y el nodo que falló con su error.</p>
+        <div v-if="aiContextLoading" class="empty-table-message">Generando contexto…</div>
+        <template v-else>
+          <textarea
+            ref="aiContextTextarea"
+            :value="aiContextText"
+            readonly
+            style="width: 100%; min-height: 220px; font-family: var(--font-mono, monospace); font-size: 13px; padding: 12px; border-radius: 8px;"
+          ></textarea>
+        </template>
+        <div class="modal-actions" style="margin-top: 16px;">
+          <button @click="closeAllModals()" class="btn btn-secondary">Cerrar</button>
+          <button @click="copyAiContext" class="btn btn-primary" :disabled="aiContextLoading">
+            {{ aiContextCopied ? '✓ Copiado' : 'Copiar al portapapeles' }}
+          </button>
+        </div>
+      </div>
+    </div>
 </template>
 
 <script setup lang="ts">
@@ -1229,7 +1261,44 @@ const closeAllModals = () => {
   showRowModal.value = false;
   showExpressionModal.value = false;
   showMcpServerModal.value = false;
+  showAiContextModal.value = false;
   expressionTarget.value = null;
+};
+
+// --- AI error-context (pre-armed LLM prompt from a failed execution) ---
+const showAiContextModal = ref(false);
+const aiContextLoading = ref(false);
+const aiContextText = ref('');
+const aiContextCopied = ref(false);
+
+const statusLabel = (status: string): string => ({
+  success: 'Éxito', failed: 'Fallo', running: 'En curso', waiting: 'En espera',
+}[status] || status);
+
+const openAiContext = async (execId: string) => {
+  showAiContextModal.value = true;
+  aiContextLoading.value = true;
+  aiContextCopied.value = false;
+  aiContextText.value = '';
+  try {
+    const ctx = await apiGetJson<{ prompt: string }>(`/api/executions/${execId}/llm-context`);
+    aiContextText.value = ctx.prompt;
+  } catch (err: any) {
+    aiContextText.value = `No se pudo generar el contexto: ${err?.message || err}`;
+  } finally {
+    aiContextLoading.value = false;
+  }
+};
+
+const copyAiContext = async () => {
+  try {
+    await navigator.clipboard.writeText(aiContextText.value);
+    aiContextCopied.value = true;
+    setTimeout(() => { aiContextCopied.value = false; }, 2000);
+  } catch {
+    // Clipboard bloqueado (http/permisos): el textarea permite copiar a mano.
+    aiContextCopied.value = false;
+  }
 };
 
 // Stores reports from the backend

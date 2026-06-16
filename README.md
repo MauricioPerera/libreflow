@@ -33,6 +33,10 @@ with an Express + SQLite backend and a Vue 3 + Vue Flow frontend.
   `/api/binaries/:id`. Capped by `LF_MAX_BINARY_MB`.
 - **Large-data helpers** — the `loop` supports `batchSize` (process items in chunks) and
   `jsCode` accepts per-node memory/timeout overrides.
+- **Flow coherence validation & AI error context** — a structural validator catches dangling
+  expressions (the rename-breakage), unknown types and bad handles (`POST
+  /api/workflows/validate`, also run on save). Failed executions expose a **pre-armed LLM
+  prompt** (`GET /api/executions/:id/llm-context`), surfaced as a "🤖 Contexto IA" button.
 
 ## Stack
 
@@ -94,6 +98,8 @@ All under `/api` (require `x-api-key` when `LF_API_KEY` is set):
 
 - `GET  /api/node-types` — registered node definitions
 - `POST /api/workflows/run` — run an ad-hoc workflow `{ workflow, payload }`
+- `POST /api/workflows/validate` — structural coherence check `{ nodes, connections }`
+- `GET  /api/executions/:id/llm-context` — pre-armed LLM prompt + context for a failed run
 - `GET|POST|DELETE /api/workflows[/:id]` — workflow CRUD (+ `/:id/active`, `/:id/versions`)
 - `GET /api/executions[/:id]`, `GET /api/workflows/:id/executions` — run history
 - `GET|POST|DELETE /api/mcp-servers[/:id]` — named MCP servers (curated workflow groups)
