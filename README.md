@@ -8,19 +8,31 @@ with an Express + SQLite backend and a Vue 3 + Vue Flow frontend.
 
 ## Highlights
 
-- **12 node types** incl. `aiAgent` (LLM tool-calling loop), `mcpToolCall` (MCP client),
-  `dataTable`, loops, sub-workflows, HTTP, JS code.
+- **19 node types** incl. `aiAgent` (LLM tool-calling loop), `mcpToolCall` (MCP client),
+  `dataTable`, loops, sub-workflows, HTTP, JS code, plus control/data primitives
+  (`switch`, `filter`, `aggregate`), file content (`extractFromFile`, `convertToFile`) and a
+  custom HTTP `respond`.
 - **MCP server, both ways** — expose the whole platform globally, or a curated **named
   server** (group of workflows as tools on its own token-protected URL). Standards-compliant
   **Streamable HTTP** transport via the official `@modelcontextprotocol/sdk`.
+- **Custom HTTP responses & web forms** — a webhook trigger can be **synchronous**
+  (`responseMode`: `lastNode`/`respondNode`) and the `respond` node returns a custom
+  status/headers/body. A **form trigger** serves an auto-generated public web form
+  (`GET/POST /form/:workflowId`) that runs the flow on submit.
+- **File content** — `extractFromFile` parses **CSV/XLSX/JSON/text** into structured rows;
+  `convertToFile` generates them back into a downloadable binary (via SheetJS).
+- **Collection primitives** — `switch` (N-way routing by rules), `filter`, and `aggregate`
+  (group-by + count/sum/avg/min/max, sort, limit, dedupe) — local, deterministic, no LLM.
 - **Data-table state engine** — unique-key idempotency, atomic `upsert` / `increment` /
-  get-or-default, rich queries (operators + sort + limit), and **reactive triggers** (run a
-  flow on row insert/update).
+  get-or-default, an all-or-nothing **`batch`** of mixed ops in one transaction, rich queries
+  (operators + sort + limit), and **reactive triggers** (run a flow on row insert/update).
 - **Streaming triggers** — persistent long-running connections (SSE, WebSocket, MQTT, IMAP)
   that fire a flow per inbound message, with automatic exponential-backoff reconnect.
 - **Binary files** — `httpRequest` can download to / upload from a binary store; node outputs
   carry a lightweight reference (`_lfBinary`) instead of inline bytes, downloadable via
   `/api/binaries/:id`. Capped by `LF_MAX_BINARY_MB`.
+- **Large-data helpers** — the `loop` supports `batchSize` (process items in chunks) and
+  `jsCode` accepts per-node memory/timeout overrides.
 
 ## Stack
 
@@ -86,7 +98,10 @@ All under `/api` (require `x-api-key` when `LF_API_KEY` is set):
 - `GET /api/executions[/:id]`, `GET /api/workflows/:id/executions` — run history
 - `GET|POST|DELETE /api/mcp-servers[/:id]` — named MCP servers (curated workflow groups)
 - `GET|POST|DELETE /api/credentials[/:id]`, `GET|POST|DELETE /api/data-tables[/:id]` (+ `/rows`)
-- `*  /hooks/:workflowId` — webhook trigger (HMAC-verified when `LF_WEBHOOK_SECRET` is set)
+- `*  /hooks/:workflowId` — webhook trigger (HMAC-verified when `LF_WEBHOOK_SECRET` is set).
+  Synchronous when the trigger's `responseMode` is `lastNode`/`respondNode` (bounded by
+  `LF_WEBHOOK_SYNC_TIMEOUT_MS`); otherwise acks immediately and runs in the background.
+- `GET|POST /form/:workflowId` — public web form (form trigger); GET renders, POST runs the flow
 
 MCP endpoints (JSON-RPC, Streamable HTTP):
 
@@ -102,8 +117,8 @@ Workflow shape: `nodes[] = {id,type,name,parameters}`, `connections[] =
 
 - `jsCode` runs user code in an **isolated-vm** sandbox (V8 with no host bindings — no
   `require`/`process`/`fs`/network), with bounded memory and time. Safe in production; no
-  opt-in flag. Tune limits with `LF_JS_TIMEOUT_MS` (default 5000) and `LF_JS_MEMORY_MB`
-  (default 128).
+  opt-in flag. Tune limits globally with `LF_JS_TIMEOUT_MS` (default 5000) and
+  `LF_JS_MEMORY_MB` (default 128), or per node via the `jsTimeoutMs` / `jsMemoryMb` params.
 - Outbound requests (httpRequest / MCP / aiAgent LLM) are SSRF-guarded; private IPs blocked
   in production.
 - Credentials are encrypted at rest (AES-256-GCM); the API never returns decrypted secrets.

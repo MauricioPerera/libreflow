@@ -80,8 +80,9 @@ check `/tmp/lf-dev.log`.
 
 The engine logic is reachable without the UI — most changes are testable here:
 ```bash
-# list registered node types (12: trigger,set,httpRequest,jsCode,if,log,merge,
-#   executeWorkflow,loop,mcpToolCall,dataTable,aiAgent)
+# list registered node types (19: trigger,set,httpRequest,jsCode,if,log,merge,
+#   executeWorkflow,loop,mcpToolCall,dataTable,extractFromFile,convertToFile,
+#   switch,filter,aggregate,aiAgent,respond,wait)
 curl -s http://localhost:3000/api/node-types
 
 # run an ad-hoc workflow (no save needed)
@@ -127,7 +128,8 @@ SQLite file and would otherwise contend (SQLITE_BUSY).
   that doesn't match source. Kill stragglers first — find PIDs with
   `netstat -ano | grep ":3000 "` / `":5173 "` then `Stop-Process -Id <pid> -Force`.
 - **Don't trust HTTP 200 alone.** Confirm the running backend matches source by
-  checking the node-type count (currently **12**, includes `dataTable` and `aiAgent`).
+  checking the node-type count (currently **19**, includes `switch`/`filter`/`aggregate`
+  and `extractFromFile`/`convertToFile`).
 - **Chrome `--screenshot` exit code is unreliable.** Some builds exit non-zero
   even on success. The driver checks that the PNG exists and is >1KB instead of
   trusting the exit code.

@@ -41,6 +41,7 @@ import mcpRouter, { publicMcpRouter } from './mcp.js';
 import { requireAuth, verifyWebhookSignature } from './auth.js';
 import { rateLimit } from './security.js';
 import { buildAuthorizationUrl, handleOAuthCallback } from './oauth2.js';
+import { parseFormFields, renderFormPage, renderCompletionPage, validateFormValues } from './forms.js';
 import crypto from 'crypto';
 
 const app = express();
@@ -675,29 +676,165 @@ app.all('/hooks/:workflowId', async (req, res) => {
       return res.status(400).json({ error: 'Workflow does not support Webhook triggers. Set triggerMode to "webhook".' });
     }
 
-    // Return success immediately to release client, then run in background
+    const webhookTrigger = (workflow.nodes || []).find(
+      (n: any) => n.type === 'trigger' && n.parameters?.triggerMode === 'webhook'
+    );
+    const responseMode = webhookTrigger?.parameters?.responseMode || 'onReceived';
     const executionId = `exec-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-    res.json({
-      success: true, 
-      message: 'Webhook received. Workflow executing in background.', 
-      executionId 
-    });
 
-    console.log(`[Webhook Trigger] Starting execution ${executionId} for workflow "${workflow.name}" (${workflowId})`);
-    
-    // Execute and save execution logs in background
-    try {
-      await executeWorkflowAndRecord(workflow, payload, { executionId });
-      console.log(`[Webhook Trigger] Completed execution ${executionId} for workflow "${workflow.name}"`);
-    } catch (execErr: any) {
-      console.error(`[Webhook Trigger] Execution error for ${workflowId}:`, execErr);
+    // Modo clásico: acuse inmediato y ejecución en segundo plano (comportamiento histórico).
+    if (responseMode === 'onReceived') {
+      res.json({
+        success: true,
+        message: 'Webhook received. Workflow executing in background.',
+        executionId
+      });
+      console.log(`[Webhook Trigger] Starting execution ${executionId} for workflow "${workflow.name}" (${workflowId})`);
+      try {
+        await executeWorkflowAndRecord(workflow, payload, { executionId });
+        console.log(`[Webhook Trigger] Completed execution ${executionId} for workflow "${workflow.name}"`);
+      } catch (execErr: any) {
+        console.error(`[Webhook Trigger] Execution error for ${workflowId}:`, execErr);
+      }
+      return;
     }
+
+    // Modos síncronos: espera la ejecución (con timeout) y responde a medida. Si salta el
+    // timeout, la ejecución sigue en segundo plano y se persiste igualmente.
+    const syncTimeout = Math.max(1000, Number(process.env.LF_WEBHOOK_SYNC_TIMEOUT_MS) || 30000);
+    const TIMED_OUT = Symbol('timed-out');
+    const raced = await Promise.race([
+      executeWorkflowAndRecord(workflow, payload, { executionId }),
+      new Promise<typeof TIMED_OUT>(r => setTimeout(() => r(TIMED_OUT), syncTimeout)),
+    ]);
+
+    if (raced === TIMED_OUT) {
+      return res.status(504).json({ error: 'Workflow did not respond in time', executionId });
+    }
+
+    const report = raced as Awaited<ReturnType<typeof executeWorkflowAndRecord>>;
+
+    // Un nodo `wait` suspendió la ejecución: no hay respuesta síncrona definitiva.
+    if (report.suspended) {
+      return res.status(202).json({ success: true, suspended: true, resumeToken: report.resumeToken, executionId });
+    }
+
+    if (responseMode === 'respondNode') {
+      if (report.httpResponse) {
+        const { status, headers, contentType, body } = report.httpResponse;
+        res.status(status);
+        for (const [k, v] of Object.entries(headers || {})) res.setHeader(k, v);
+        const hasCT = Object.keys(headers || {}).some(k => k.toLowerCase() === 'content-type');
+        if (contentType && !hasCT) res.type(contentType);
+        const out = (body !== null && typeof body === 'object') ? JSON.stringify(body) : (body ?? '');
+        return res.send(out);
+      }
+      // responseMode = respondNode pero ningún nodo "Responder" llegó a ejecutarse.
+      return res.status(report.success ? 200 : 500).json({ success: report.success, message: 'No respond node was reached', executionId });
+    }
+
+    // responseMode === 'lastNode': devuelve la salida del último nodo ejecutado con éxito.
+    const successResults = Object.values(report.nodeResults).filter(r => r.status === 'success' && r.endTime);
+    successResults.sort((a, b) => (a.endTime! < b.endTime! ? -1 : a.endTime! > b.endTime! ? 1 : 0));
+    const last = successResults[successResults.length - 1];
+    return res.status(report.success ? 200 : 500).json(last ? last.output : { success: report.success });
 
   } catch (err: any) {
     console.error(`[Webhook Trigger Router Error] Failed to dispatch workflow ${workflowId}:`, err);
     if (!res.headersSent) {
       return serverError(res, err);
     }
+  }
+});
+
+// ----- PUBLIC FORM TRIGGER -----
+// Sirve un formulario web (GET) y ejecuta el flujo al enviarlo (POST). Público, como
+// /hooks, pero sin HMAC (lo invoca un navegador): la seguridad la dan flujo-activo +
+// solo-campos-definidos + rate limiting global. Igual que un webhook síncrono, una
+// respuesta a medida sale de un nodo `respond`; si no, se muestra una página de gracias.
+function findFormTrigger(workflow: any) {
+  return (workflow?.nodes || []).find(
+    (n: any) => n.type === 'trigger' && n.parameters?.triggerMode === 'form'
+  );
+}
+
+app.get('/form/:workflowId', async (req, res) => {
+  try {
+    const workflow = await getWorkflowById(req.params.workflowId);
+    if (!workflow) return res.status(404).type('text/plain').send('Workflow not found');
+    const trigger = findFormTrigger(workflow);
+    if (!trigger) return res.status(400).type('text/plain').send('Este flujo no tiene un trigger de tipo Formulario.');
+    if (!workflow.active) return res.status(503).type('text/plain').send('Formulario no disponible (flujo inactivo).');
+    const p = trigger.parameters || {};
+    return res.type('text/html').send(renderFormPage({
+      title: p.formTitle, description: p.formDescription, buttonText: p.formButtonText,
+      fields: parseFormFields(p.formFields),
+    }));
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+app.post('/form/:workflowId', express.urlencoded({ extended: true }), async (req, res) => {
+  const { workflowId } = req.params;
+  try {
+    const workflow = await getWorkflowById(workflowId);
+    if (!workflow) return res.status(404).type('text/plain').send('Workflow not found');
+    const trigger = findFormTrigger(workflow);
+    if (!trigger) return res.status(400).type('text/plain').send('Este flujo no tiene un trigger de tipo Formulario.');
+    if (!workflow.active) return res.status(503).type('text/plain').send('Formulario no disponible (flujo inactivo).');
+
+    const p = trigger.parameters || {};
+    const fields = parseFormFields(p.formFields);
+    const values: Record<string, any> = (req.body && typeof req.body === 'object') ? req.body : {};
+
+    // Validación de obligatorios → re-render con errores (conserva lo introducido).
+    const errors = validateFormValues(fields, values);
+    if (errors.length) {
+      return res.status(400).type('text/html').send(renderFormPage({
+        title: p.formTitle, description: p.formDescription, buttonText: p.formButtonText,
+        fields, values, errors,
+      }));
+    }
+
+    // Solo los campos DEFINIDOS llegan al flujo (no se inyectan claves arbitrarias).
+    const formData: Record<string, any> = {};
+    for (const f of fields) if (values[f.name] !== undefined) formData[f.name] = values[f.name];
+
+    const payload = { form: formData, query: req.query, source: 'form', timestamp: new Date().toISOString() };
+    const executionId = `exec-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+
+    const syncTimeout = Math.max(1000, Number(process.env.LF_WEBHOOK_SYNC_TIMEOUT_MS) || 30000);
+    const TIMED_OUT = Symbol('timed-out');
+    const raced = await Promise.race([
+      executeWorkflowAndRecord(workflow, payload, { executionId }),
+      new Promise<typeof TIMED_OUT>(r => setTimeout(() => r(TIMED_OUT), syncTimeout)),
+    ]);
+    if (raced === TIMED_OUT) return res.status(504).type('text/plain').send('El flujo tardó demasiado en responder.');
+
+    const report = raced as Awaited<ReturnType<typeof executeWorkflowAndRecord>>;
+
+    // Un nodo `respond` permite páginas de gracias / redirecciones a medida.
+    if (report.httpResponse) {
+      const { status, headers, contentType, body } = report.httpResponse;
+      res.status(status);
+      for (const [k, v] of Object.entries(headers || {})) res.setHeader(k, v);
+      const hasCT = Object.keys(headers || {}).some(k => k.toLowerCase() === 'content-type');
+      if (contentType && !hasCT) res.type(contentType);
+      const out = (body !== null && typeof body === 'object') ? JSON.stringify(body) : (body ?? '');
+      return res.send(out);
+    }
+
+    if (report.suspended) {
+      return res.status(202).type('text/html').send(renderCompletionPage('Tu envío se está procesando.'));
+    }
+
+    return res.status(report.success ? 200 : 500).type('text/html').send(
+      renderCompletionPage(report.success ? (p.formCompletionMessage || undefined) : 'Hubo un problema al procesar el formulario.')
+    );
+  } catch (err: any) {
+    console.error(`[Form Trigger] Error for ${workflowId}:`, err);
+    if (!res.headersSent) return serverError(res, err);
   }
 });
 

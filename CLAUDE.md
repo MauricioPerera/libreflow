@@ -24,14 +24,26 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   **collapsed to a single node** and their body runs as an isolated recursive sub-graph
   **once per iteration** (`runSubgraph` / `runLoop`), which makes every sub-graph acyclic
   and supports **nested loops**. `getLoopBodyNodes` treats the loop node as a boundary
-  (never traverses through it). Exports `WorkflowValidationError` for user-facing structural
+  (never traverses through it). The loop supports `batchSize` (>1 → body runs per CHUNK,
+  reading `$node.Loop.output.items`; default 1 keeps the item-at-a-time `.item`/`.index`/
+  `.isLast` shape). Exports `WorkflowValidationError` for user-facing structural
   errors (surfaced as HTTP 400). A step cap (`LF_MAX_EXECUTION_STEPS`) guards infinite loops.
 - **nodes.ts** — `executeNode` + expression resolution `{{ $node.Name.output.path }}`.
   Ephemeral params (loop state, trigger payload) are passed as `paramOverrides` — the engine
   NEVER mutates the shared node object (keeps re-runs deterministic). Prototype-pollution
   keys are blocked in path traversal.
 - **registry.ts** — node definitions (trigger, set, httpRequest, jsCode, if, log, merge,
-  executeWorkflow, loop, mcpToolCall, dataTable, **aiAgent**). `NodeRegistry` is the single
+  executeWorkflow, loop, mcpToolCall, dataTable, **extractFromFile**, **convertToFile**,
+  **switch**, **filter**, **aggregate**, **aiAgent**, **respond**, wait).
+  `extractFromFile`/`convertToFile` parse and generate file CONTENT (CSV/XLSX/JSON/text) —
+  bridging the binary store to structured data (logic in `fileParse.ts`). `switch` (N-way
+  routing by rules), `filter` and `aggregate` (summarize/sort/limit/unique) are local
+  collection primitives (pure logic in `collections.ts`). `switch` routes like `if` — the
+  engine forwards only the output handle matching `output.matched`, skipping the rest. The `trigger`
+  node has modes manual/webhook/cron/dataTable/stream/**form**, plus a webhook `responseMode`
+  (onReceived/lastNode/respondNode). The `respond` node declares a custom synchronous HTTP
+  response (status/headers/body); the engine captures it into `report.httpResponse` and the
+  webhook/form routes emit it. `NodeRegistry` is the single
   source of node types. `aiAgent` is an LLM tool-calling loop (OpenAI-compatible endpoint)
   whose toolset is an MCP server — own (in-process) or external (SDK client). Shared
   credential→auth helper (`resolveCredentialAuth`) used by httpRequest / mcpToolCall / aiAgent;
@@ -58,7 +70,11 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   `bodyType: binary` (upload). **Data-table state engine**: optional unique key column
   (`key_column` + derived `row_key`) enabling atomic `upsert` / `increment` / get-or-default,
   rich `queryDataTableRows` (operators eq/ne/gt/lt/gte/lte/contains/in via `json_extract`),
-  and a transactional batch insert (`addDataTableRows`).
+  a transactional batch insert (`addDataTableRows`), and `batchDataTableRows` — an
+  all-or-nothing transaction of MIXED ops (append/update/delete/upsert/increment) in one
+  BEGIN/COMMIT (events emitted only after commit). This is the "one transaction = one node"
+  unit (no cross-node transactions in the stateless engine); exposed as the dataTable `batch`
+  operation.
 - **dataTableEvents.ts** — reactive data-table triggers: a decoupled event bus (db.ts emits,
   triggerManager subscribes — so db never imports the executor) plus an `AsyncLocalStorage`
   trigger-depth guard that caps self-feeding cascades (`MAX_TRIGGER_DEPTH`).
@@ -74,6 +90,21 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
 - **server.ts** — Express API. `requireAuth` on `/api`, HMAC on `/hooks/:id`, gzip compression
   (SSE excluded), rate limiting, generic 500s (real error logged, masked to client) via
   `serverError`. Mounts the public named-MCP-server router at `/mcp` (outside `/api` auth).
+  Webhooks (`/hooks/:id`) honor the trigger's `responseMode`: `onReceived` (immediate ack +
+  background run, the legacy default) vs synchronous `lastNode`/`respondNode` (await the run,
+  bounded by `LF_WEBHOOK_SYNC_TIMEOUT_MS`, then emit `report.httpResponse`).
+- **collections.ts** — pure local-collection primitives (no DB): `compareValues`, `filterItems`,
+  `summarize` (group by + count/sum/avg/min/max), `sortItems`, `limitItems`, `uniqueItems`,
+  `getPath` (dotted paths). Backs the switch/filter/aggregate nodes.
+- **fileParse.ts** — pure parse/serialize of file CONTENT via SheetJS (`xlsx`): `parseFileBuffer`
+  / `serializeToFile` / `detectFormat` for CSV/XLSX/JSON/text. Sanitizes object keys on parse
+  (`isUnsafeKey`) to mitigate SheetJS 0.18.x prototype pollution. Used by the
+  extractFromFile/convertToFile nodes; the bytes live in the binary store, never inline.
+- **forms.ts** — public **form trigger** rendering (no DB, no state): `renderFormPage` /
+  `renderCompletionPage` / `parseFormFields` / `validateFormValues`. Routes `GET/POST
+  /form/:workflowId` (public, no HMAC — browser-driven; guarded by active-flow +
+  only-defined-fields + global rate limit) serve an auto-generated HTML form and run the flow
+  on submit; a `respond` node gives a custom thank-you/redirect, else a default completion page.
 - **auth.ts / security.ts** — API key + webhook HMAC; `constantTimeEqual` (per-MCP-server token);
   SSRF guard (`assertSafeUrl`), `isUnsafeKey`, `rateLimit`, `cronTooFrequent`.
 - **mcp.ts** — MCP server **and** client, via the official SDK (`@modelcontextprotocol/sdk`).
