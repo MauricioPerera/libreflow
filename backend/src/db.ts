@@ -7,8 +7,12 @@ import { emitRowEvent, hasRowSubscribers, anyRowSubscribers } from './dataTableE
 let db: Database<sqlite3.Database, sqlite3.Statement>;
 
 export async function initDatabase() {
-  const dbPath = path.resolve(process.cwd(), 'database.sqlite');
-  
+  // LF_DB_PATH lets a container/host point the SQLite file (+ WAL/-shm + binaries) at a
+  // persistent volume. Defaults to ./database.sqlite next to the process cwd.
+  const dbPath = process.env.LF_DB_PATH
+    ? path.resolve(process.env.LF_DB_PATH)
+    : path.resolve(process.cwd(), 'database.sqlite');
+
   db = await open({
     filename: dbPath,
     driver: sqlite3.Database

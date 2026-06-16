@@ -89,6 +89,24 @@ npm run build               # backend (tsc) + frontend (vue-tsc && vite build)
 npm test                    # backend test suite (vitest)
 ```
 
+## Deploy with Docker (single container)
+
+One container runs the backend, which also serves the built frontend. State (SQLite +
+binaries) lives in a named volume — back it up by copying that one file.
+
+```bash
+cp .env.example .env        # then set ENCRYPTION_KEY, LF_API_KEY (and LF_PUBLIC_URL for OAuth)
+docker compose up -d --build
+# → http://localhost:3000
+```
+
+- **Persistence**: SQLite at `/data/database.sqlite` (env `LF_DB_PATH`) on the `libreflow-data`
+  volume; the binaries table is in the same file. Back up = stop + copy the file.
+- **Frontend**: served by the backend from `LF_STATIC_DIR` (`/app/frontend/dist`); the API is
+  same-origin at `/api`, so no proxy needed in production.
+- **Secrets**: `ENCRYPTION_KEY` and `LF_API_KEY` are required (compose refuses to start
+  without them). Set `LF_PUBLIC_URL` to your real URL for interactive OAuth and webhook/form links.
+
 ## Driving it programmatically
 
 There's a run/smoke skill at [.claude/skills/run-libreflow/](.claude/skills/run-libreflow):

@@ -1,0 +1,15 @@
+node_modules
+**/node_modules
+backend/dist
+frontend/dist
+**/*.sqlite
+**/*.sqlite-wal
+**/*.sqlite-shm
+.git
+.github
+.claude
+**/.env
+.env
+npm-debug.log*
+*.log
+.DS_Store
