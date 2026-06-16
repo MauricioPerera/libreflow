@@ -1185,6 +1185,7 @@ import { Controls } from '@vue-flow/controls';
 import NodeConfigPanel from './components/NodeConfigPanel.vue';
 import ExpressionEditor from './components/ExpressionEditor.vue';
 import CustomNode from './components/CustomNode.vue';
+import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
 // Screen Routing states
 const currentView = ref<'dashboard' | 'editor'>('dashboard');
@@ -1386,9 +1387,6 @@ const aiContextLoading = ref(false);
 const aiContextText = ref('');
 const aiContextCopied = ref(false);
 
-const statusLabel = (status: string): string => ({
-  success: 'Éxito', failed: 'Fallo', running: 'En curso', waiting: 'En espera',
-}[status] || status);
 
 const openAiContext = async (execId: string) => {
   showAiContextModal.value = true;
@@ -1543,27 +1541,6 @@ const updateNodeName = (name: string) => {
 };
 
 // Nested value setter utility for expression updates
-const UNSAFE_PATH_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
-
-const setNestedValue = (obj: any, path: string, value: any) => {
-  const parts = path.split('.');
-  // Guard against prototype pollution via crafted parameter paths.
-  if (parts.some(p => UNSAFE_PATH_KEYS.has(p))) {
-    console.warn('[LibreFlow] Blocked unsafe parameter path:', path);
-    return;
-  }
-  let current = obj;
-  for (let i = 0; i < parts.length - 1; i++) {
-    const part = parts[i];
-    const nextPart = parts[i + 1];
-    if (current[part] === undefined) {
-      current[part] = isNaN(Number(nextPart)) ? {} : [];
-    }
-    current = current[part];
-  }
-  current[parts[parts.length - 1]] = value;
-};
-
 const handleOpenExpressionEditor = (field: string, label: string, val: string) => {
   if (selectedNode.value) {
     expressionTarget.value = {
@@ -2244,17 +2221,6 @@ const deleteMcpServerFromDb = async (id: string) => {
   }
 };
 
-const parseJsonColumns = (cols: any) => {
-  if (typeof cols === 'string') {
-    try {
-      return JSON.parse(cols);
-    } catch {
-      return [];
-    }
-  }
-  return cols || [];
-};
-
 const openCreateTableModal = () => {
   editingTableId.value = null;
   dataTableName.value = '';
@@ -2380,20 +2346,6 @@ const addRowToSelectedTable = async () => {
 
 // Coerces row values to match each column's declared type (number/boolean), so inline
 // edits don't persist booleans/numbers as strings. (FE-16)
-const coerceRowByColumns = (data: Record<string, any>, columns: any[]): Record<string, any> => {
-  const out: Record<string, any> = { ...data };
-  for (const col of columns || []) {
-    const v = out[col.name];
-    if (v === undefined || v === null) continue;
-    if (col.type === 'number') {
-      out[col.name] = v === '' ? null : Number(v);
-    } else if (col.type === 'boolean') {
-      out[col.name] = v === true || v === 'true' || v === 1 || v === '1';
-    }
-  }
-  return out;
-};
-
 const startInlineRowEdit = (row: any) => {
   editingRowId.value = row.id;
   // Coerce on entry so checkbox/number inputs bind to the right primitive type.
@@ -2563,15 +2515,6 @@ const loadSampleWorkflow = () => {
 
   initializeNodeCounters();
   activeWorkflowName.value = 'Ejemplo de Integración n8n';
-};
-
-const formatFullDate = (dateStr: string) => {
-  try {
-    const d = new Date(dateStr);
-    return `${d.toLocaleDateString()} ${d.toLocaleTimeString()}`;
-  } catch {
-    return dateStr;
-  }
 };
 
 const fetchWorkflowVersions = async (workflowId: string | null) => {
