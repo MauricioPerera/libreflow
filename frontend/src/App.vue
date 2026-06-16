@@ -240,6 +240,9 @@
           @connect="onConnect"
           @node-click="onNodeClick"
           @pane-click="onPaneClick"
+          @node-drag-stop="onNodeDragStop"
+          @nodes-change="onNodesChange"
+          @edges-change="onEdgesChange"
           :fit-view-on-init="true"
           :nodes-draggable="!isPreviewMode"
           :nodes-connectable="!isPreviewMode"
@@ -785,6 +788,25 @@ const onConnect = (params: any) => {
   isDirty.value = true;
 };
 
+// True mientras cargamos un flujo en el canvas (clear/load/preview): suprime el marcado de
+// "dirty" por los cambios programáticos. Se resetea con setTimeout(0), que corre DESPUÉS de
+// los watchers (microtasks) con los que Vue Flow emite los cambios -> sin falsos positivos.
+const applyingCanvas = ref(false);
+const beginApplyCanvas = () => {
+  applyingCanvas.value = true;
+  setTimeout(() => { applyingCanvas.value = false; }, 0);
+};
+// Mover un nodo (drag) o borrarlo marca cambios sin guardar. Crear nodos/conexiones ya lo hace.
+const onNodeDragStop = () => { if (!isPreviewMode.value) isDirty.value = true; };
+const onNodesChange = (changes: any[]) => {
+  if (applyingCanvas.value || isPreviewMode.value) return;
+  if (Array.isArray(changes) && changes.some(c => c?.type === 'remove')) isDirty.value = true;
+};
+const onEdgesChange = (changes: any[]) => {
+  if (applyingCanvas.value || isPreviewMode.value) return;
+  if (Array.isArray(changes) && changes.some(c => c?.type === 'remove')) isDirty.value = true;
+};
+
 const onNodeClick = (event: any) => {
   selectedNode.value = event.node;
   activeTab.value = 'config'; 
@@ -910,6 +932,7 @@ const getExecutionResultForNode = (nodeId: string) => {
 };
 
 const clearWorkflow = () => {
+  beginApplyCanvas();
   nodes.value = [];
   edges.value = [];
   selectedNode.value = null;
@@ -959,8 +982,9 @@ const loadWorkflowForEdit = async (workflowId: string) => {
     }
 
     const workflow = await res.json();
-    
+
     // Map the database nodes array back into the format Vue Flow expects
+    beginApplyCanvas();
     nodes.value = (workflow.nodes || []).map((n: any, idx: number) => ({
       id: n.id,
       type: n.type,
@@ -1778,6 +1802,7 @@ const previewWorkflowVersion = async (versionNum: number) => {
     }
 
     // Load version data into canvas
+    beginApplyCanvas();
     nodes.value = (versionData.nodes || []).map((n: any, idx: number) => ({
       id: n.id,
       type: n.type,
@@ -1786,7 +1811,8 @@ const previewWorkflowVersion = async (versionNum: number) => {
         : { x: 280 + idx * 240, y: 220 },
       data: {
         name: n.name,
-        parameters: n.parameters || {}
+        parameters: n.parameters || {},
+        ...(n.pinData !== undefined ? { pinData: n.pinData } : {})
       }
     }));
 
