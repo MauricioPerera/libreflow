@@ -143,3 +143,35 @@ export function validateWorkflow(workflow: Wf): FlowValidationResult {
   const warnings = issues.length - errors;
   return { ok: errors === 0, errors, warnings, issues };
 }
+
+export interface BatchValidationItem extends FlowValidationResult {
+  id: string;
+  name: string;
+}
+
+export interface BatchValidationResult {
+  summary: { total: number; withErrors: number; withWarnings: number };
+  workflows: BatchValidationItem[];
+}
+
+/**
+ * Valida muchos flujos de una (el patrón "arregla en una sesión todos los flujos que pegan a
+ * una misma API"): por flujo devuelve su resultado, más un resumen agregado.
+ */
+export function validateWorkflows(
+  list: Array<{ id: string; name: string; nodes?: WfNode[]; connections?: WfConn[] }>
+): BatchValidationResult {
+  const workflows = (list || []).map(w => ({
+    id: w.id,
+    name: w.name,
+    ...validateWorkflow(w),
+  }));
+  return {
+    summary: {
+      total: workflows.length,
+      withErrors: workflows.filter(w => w.errors > 0).length,
+      withWarnings: workflows.filter(w => w.warnings > 0).length,
+    },
+    workflows,
+  };
+}

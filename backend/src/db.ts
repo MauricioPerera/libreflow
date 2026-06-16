@@ -182,6 +182,17 @@ export async function getWorkflows() {
   return db.all('SELECT id, name, description, active, onErrorWorkflowId, created_at, updated_at FROM workflows ORDER BY updated_at DESC');
 }
 
+/** Todos los flujos con su grafo (nodes/connections parseados). Para validación en lote. */
+export async function getAllWorkflowsWithGraph() {
+  const list = await db.all('SELECT id, name, nodes, connections FROM workflows ORDER BY updated_at DESC');
+  return list.map(w => ({
+    id: w.id,
+    name: w.name,
+    nodes: JSON.parse(w.nodes),
+    connections: JSON.parse(w.connections),
+  }));
+}
+
 export async function getActiveWorkflows() {
   const list = await db.all('SELECT * FROM workflows WHERE active = 1 ORDER BY id ASC');
   return list.map(workflow => {

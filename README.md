@@ -99,6 +99,8 @@ All under `/api` (require `x-api-key` when `LF_API_KEY` is set):
 - `GET  /api/node-types` — registered node definitions
 - `POST /api/workflows/run` — run an ad-hoc workflow `{ workflow, payload }`
 - `POST /api/workflows/validate` — structural coherence check `{ nodes, connections }`
+- `POST /api/workflows/validate-batch` — validate many saved flows at once; filter by `{ ids }`
+  or `{ contains }` (graph substring, e.g. an API host) for "fix all flows tied to one API"
 - `GET  /api/executions/:id/llm-context` — pre-armed LLM prompt + context for a failed run
 - `GET|POST|DELETE /api/workflows[/:id]` — workflow CRUD (+ `/:id/active`, `/:id/versions`)
 - `GET /api/executions[/:id]`, `GET /api/workflows/:id/executions` — run history
