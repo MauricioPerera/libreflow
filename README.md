@@ -102,6 +102,9 @@ docker compose up -d --build
 
 - **Persistence**: SQLite at `/data/database.sqlite` (env `LF_DB_PATH`) on the `libreflow-data`
   volume; the binaries table is in the same file. Back up = stop + copy the file.
+- **Portability**: export a single flow as JSON (Flujos → *Exportar*, or `GET
+  /api/workflows/:id/export`) and import it elsewhere (*Importar*, or `POST
+  /api/workflows/import`) — credentials are referenced by id, never exported.
 - **Frontend**: served by the backend from `LF_STATIC_DIR` (`/app/frontend/dist`); the API is
   same-origin at `/api`, so no proxy needed in production.
 - **Secrets**: `ENCRYPTION_KEY` and `LF_API_KEY` are required (compose refuses to start

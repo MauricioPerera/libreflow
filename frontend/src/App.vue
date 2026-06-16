@@ -49,6 +49,8 @@
         :loaded="dashboardLoaded"
         @validate="openBatchValidate"
         @create="createNewWorkflow"
+        @import="importWorkflow"
+        @export="exportWorkflow"
         @edit="loadWorkflowForEdit"
         @delete="deleteWorkflowFromDb"
       />
@@ -1073,6 +1075,54 @@ const deleteWorkflowFromDb = async (workflowId: string) => {
   } catch (err) {
     console.error('Error deleting workflow:', err);
   }
+};
+
+// Descarga un flujo guardado como JSON portable.
+const exportWorkflow = async (id: string) => {
+  try {
+    const res = await fetch(`/api/workflows/${id}/export`);
+    if (!res.ok) { alert('No se pudo exportar el flujo.'); return; }
+    const data = await res.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(data.name || 'flujo').replace(/[^\w.\-]+/g, '_')}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error('Error exporting workflow:', err);
+    alert('Error al exportar el flujo.');
+  }
+};
+
+// Importa un flujo desde un fichero JSON (crea uno nuevo) y refresca la lista.
+const importWorkflow = () => {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.onchange = async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const json = JSON.parse(await file.text());
+      const res = await fetch('/api/workflows/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(json),
+      });
+      const result = await res.json();
+      if (!res.ok) { alert(result?.error || 'No se pudo importar el flujo.'); return; }
+      await fetchSavedWorkflows();
+      alert(`Flujo "${result.name}" importado.`);
+    } catch (err) {
+      console.error('Error importing workflow:', err);
+      alert('JSON inválido o error al importar el flujo.');
+    }
+  };
+  input.click();
 };
 
 // CREDENTIALS CRUD LOGIC

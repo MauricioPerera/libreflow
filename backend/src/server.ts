@@ -190,6 +190,46 @@ app.get('/api/workflows/:id', async (req, res) => {
   }
 });
 
+// Exporta un flujo como JSON portable (sin id/estado/timestamps): para compartir o versionar
+// entre instancias. No incluye secretos — las credenciales se referencian por id.
+app.get('/api/workflows/:id/export', async (req, res) => {
+  try {
+    const wf = await getWorkflowById(req.params.id);
+    if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+    return res.json({
+      libreflowWorkflow: 1,
+      name: wf.name,
+      description: wf.description ?? null,
+      nodes: wf.nodes || [],
+      connections: wf.connections || [],
+    });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+// Importa un flujo desde un JSON portable: crea un flujo NUEVO (id nuevo) y devuelve la
+// validación de coherencia. Acepta el objeto exportado directamente o { workflow }.
+app.post('/api/workflows/import', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const wf = body.libreflowWorkflow ? body : body.workflow;
+    if (!wf || !Array.isArray(wf.nodes)) {
+      return res.status(400).json({ error: 'JSON de flujo inválido: falta el array nodes.' });
+    }
+    if (wf.connections != null && !Array.isArray(wf.connections)) {
+      return res.status(400).json({ error: 'connections debe ser un array.' });
+    }
+    const id = `wf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const name = typeof wf.name === 'string' && wf.name.trim() ? wf.name : 'Flujo importado';
+    await saveWorkflow(id, name, wf.nodes, wf.connections || [], undefined, wf.description ?? null);
+    const validation = validateWorkflow({ nodes: wf.nodes, connections: wf.connections || [] });
+    return res.json({ id, name, validation });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
 app.post('/api/workflows', async (req, res) => {
   try {
     const { id, name, nodes, connections, onErrorWorkflowId, description } = req.body;
