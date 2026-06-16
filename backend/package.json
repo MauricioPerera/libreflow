@@ -18,7 +18,8 @@
     "node-cron": "^4.2.1",
     "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1",
-    "ws": "^8.21.0"
+    "ws": "^8.21.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/compression": "^1.8.1",

@@ -564,6 +564,104 @@ export async function addDataTableRows(tableId: string, rowsData: Record<string,
   return inserted.map(r => r.id);
 }
 
+export interface BatchOp {
+  op: 'append' | 'update' | 'delete' | 'upsert' | 'increment';
+  rowId?: string;
+  key?: string;
+  data?: Record<string, any>;
+  field?: string;
+  amount?: number;
+}
+
+/**
+ * Aplica una secuencia de operaciones de escritura mixtas (append/update/delete/upsert/
+ * increment) en UNA sola transacción (todo-o-nada). Si cualquier op falla, se hace ROLLBACK
+ * completo y no se aplica ninguna — esta es la unidad transaccional "una transacción = un
+ * nodo" (no hay transacciones entre nodos en el motor stateless). Los eventos reactivos se
+ * emiten solo tras un COMMIT correcto.
+ */
+export async function batchDataTableRows(tableId: string, ops: BatchOp[]) {
+  const keyColumn = await getTableKeyColumn(tableId);
+  const events: { id: string; type: 'insert' | 'update'; data: any }[] = [];
+  const results: { op: string; id?: string }[] = [];
+
+  const newId = () => `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+
+  await db.run('BEGIN');
+  try {
+    for (const o of ops || []) {
+      const op = o?.op;
+      if (op === 'append') {
+        const data = o.data || {};
+        const rowId = newId();
+        await db.run(
+          'INSERT INTO data_table_rows (id, table_id, row_key, data) VALUES (?, ?, ?, ?)',
+          [rowId, tableId, computeRowKey(keyColumn, data), JSON.stringify(data)]
+        );
+        events.push({ id: rowId, type: 'insert', data });
+        results.push({ op, id: rowId });
+      } else if (op === 'update') {
+        if (!o.rowId) throw new Error('batch: la operación "update" requiere rowId');
+        await db.run(
+          'UPDATE data_table_rows SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+          [JSON.stringify(o.data || {}), o.rowId]
+        );
+        events.push({ id: o.rowId, type: 'update', data: o.data || {} });
+        results.push({ op, id: o.rowId });
+      } else if (op === 'delete') {
+        if (!o.rowId) throw new Error('batch: la operación "delete" requiere rowId');
+        await db.run('DELETE FROM data_table_rows WHERE id = ?', [o.rowId]);
+        results.push({ op, id: o.rowId });
+      } else if (op === 'upsert') {
+        if (!keyColumn) throw new Error('batch: "upsert" requiere que la tabla tenga columna clave');
+        const data = o.data || {};
+        const rowKey = computeRowKey(keyColumn, data);
+        if (rowKey === null) throw new Error(`batch: fila sin la columna clave "${keyColumn}"`);
+        const existed = await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+        await db.run(
+          `INSERT INTO data_table_rows (id, table_id, row_key, data) VALUES (?, ?, ?, ?)
+           ON CONFLICT(table_id, row_key) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP`,
+          [newId(), tableId, rowKey, JSON.stringify(data)]
+        );
+        const row = await db.get('SELECT id, data FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+        events.push({ id: row.id, type: existed ? 'update' : 'insert', data: JSON.parse(row.data) });
+        results.push({ op, id: row.id });
+      } else if (op === 'increment') {
+        if (!keyColumn) throw new Error('batch: "increment" requiere que la tabla tenga columna clave');
+        if (o.key === undefined || o.key === null || o.key === '') throw new Error('batch: "increment" requiere key');
+        const field = o.field || 'count';
+        if (/[.[\]$]/.test(field)) throw new Error(`batch: el campo de increment debe ser un nombre de primer nivel (got "${field}")`);
+        const amount = Number.isFinite(Number(o.amount)) ? Number(o.amount) : 1;
+        const rowKey = String(o.key);
+        const existed = await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+        await db.run(
+          `INSERT INTO data_table_rows (id, table_id, row_key, data)
+           VALUES (?, ?, ?, json_object(?, ?, ?, ?))
+           ON CONFLICT(table_id, row_key) DO UPDATE
+           SET data = json_set(data, '$.' || ?, COALESCE(json_extract(data, '$.' || ?), 0) + ?),
+               updated_at = CURRENT_TIMESTAMP`,
+          [newId(), tableId, rowKey, keyColumn, o.key, field, amount, field, field, amount]
+        );
+        const row = await db.get('SELECT id, data FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+        events.push({ id: row.id, type: existed ? 'update' : 'insert', data: JSON.parse(row.data) });
+        results.push({ op, id: row.id });
+      } else {
+        throw new Error(`batch: operación no soportada "${op}"`);
+      }
+    }
+    await db.run('COMMIT');
+  } catch (err: any) {
+    await db.run('ROLLBACK');
+    if (/UNIQUE constraint/i.test(err?.message || '')) {
+      throw new Error('batch: clave duplicada — no se aplicó ninguna operación (rollback completo).');
+    }
+    throw err;
+  }
+
+  for (const e of events) emitRowEvent(tableId, e.id, e.type, e.data);
+  return results;
+}
+
 /**
  * Atomically inserts or updates a row by the table's key column (ON CONFLICT). Requires
  * the table to declare a key column. This is the idempotency / state-write primitive.

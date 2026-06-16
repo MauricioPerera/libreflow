@@ -52,7 +52,8 @@ vi.mock('../src/db.js', () => {
     upsertDataTableRow: async () => ({}),
     incrementDataTableRow: async () => ({}),
     getOrCreateDataTableRow: async () => ({}),
-    queryDataTableRows: async () => []
+    queryDataTableRows: async () => [],
+    batchDataTableRows: async () => []
   };
 });
 

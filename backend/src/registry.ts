@@ -2,6 +2,8 @@ import { LibreFlowNodeDefinition } from './sdk.js';
 import { WorkflowSuspendError } from './engine.js';
 import { getCredentialById, getWorkflowById, getBinary } from './db.js';
 import { storeBinary, isBinaryRef, fileNameFromUrl } from './binary.js';
+import { parseFileBuffer, serializeToFile, detectFormat, FileFormat } from './fileParse.js';
+import { compareValues, filterItems, summarize, sortItems, limitItems, uniqueItems, Aggregation } from './collections.js';
 import ivm from 'isolated-vm';
 import { executeMcpToolCall } from './mcp.js';
 import { assertSafeUrl, isUnsafeKey } from './security.js';
@@ -83,7 +85,8 @@ const triggerNode: LibreFlowNodeDefinition = {
         { label: 'Webhook (URL Externa)', value: 'webhook' },
         { label: 'Cron (Programado)', value: 'cron' },
         { label: 'Tabla de Datos (Reactivo)', value: 'dataTable' },
-        { label: 'Streaming (SSE / WebSocket / MQTT / IMAP)', value: 'stream' }
+        { label: 'Streaming (SSE / WebSocket / MQTT / IMAP)', value: 'stream' },
+        { label: 'Formulario (página web pública)', value: 'form' }
       ]
     },
     {
@@ -179,6 +182,53 @@ const triggerNode: LibreFlowNodeDefinition = {
       default: '{\n  "type": "object",\n  "properties": {}\n}',
       placeholder: 'JSON Schema de los parámetros de entrada',
       description: 'Define los parámetros que espera este flujo cuando es invocado como herramienta de IA / MCP.'
+    },
+    {
+      name: 'responseMode',
+      label: 'Respuesta del Webhook',
+      type: 'options',
+      default: 'onReceived',
+      options: [
+        { label: 'Inmediata (acuse al recibir, ejecuta en segundo plano)', value: 'onReceived' },
+        { label: 'Último nodo (espera y devuelve su salida)', value: 'lastNode' },
+        { label: 'Nodo Responder (espera y usa el nodo "Responder")', value: 'respondNode' }
+      ],
+      description: 'Solo para modo Webhook. "Inmediata" no espera (comportamiento clásico). Los otros modos hacen la petición síncrona.'
+    },
+    {
+      name: 'formTitle',
+      label: 'Formulario: título',
+      type: 'string',
+      default: 'Formulario',
+      placeholder: 'Contáctanos'
+    },
+    {
+      name: 'formDescription',
+      label: 'Formulario: descripción',
+      type: 'string',
+      default: '',
+      placeholder: 'Rellena los campos y envía.'
+    },
+    {
+      name: 'formButtonText',
+      label: 'Formulario: texto del botón',
+      type: 'string',
+      default: 'Enviar'
+    },
+    {
+      name: 'formCompletionMessage',
+      label: 'Formulario: mensaje al enviar',
+      type: 'string',
+      default: '',
+      placeholder: '¡Gracias! Hemos recibido tu envío.'
+    },
+    {
+      name: 'formFields',
+      label: 'Formulario: campos (JSON)',
+      type: 'json',
+      default: '[\n  { "name": "email", "label": "Email", "type": "email", "required": true }\n]',
+      placeholder: '[{"name":"email","label":"Email","type":"email","required":true}]',
+      description: 'Array de campos. type: text|email|number|date|password|textarea|dropdown. dropdown usa "options": [...].'
     }
   ],
   execute: async (params) => {
@@ -413,6 +463,18 @@ const jsCodeNode: LibreFlowNodeDefinition = {
       label: 'Código JS',
       type: 'code',
       default: '// Escribe tu script aquí\nreturn { resultado: "Hola" };'
+    },
+    {
+      name: 'jsTimeoutMs',
+      label: 'Timeout (ms) — vacío = global LF_JS_TIMEOUT_MS',
+      type: 'string',
+      default: ''
+    },
+    {
+      name: 'jsMemoryMb',
+      label: 'Memoria (MB) — vacío = global LF_JS_MEMORY_MB',
+      type: 'string',
+      default: ''
     }
   ],
   execute: async (params, context) => {
@@ -420,8 +482,11 @@ const jsCodeNode: LibreFlowNodeDefinition = {
     // host: sin require/fs/process/red). Memoria y tiempo acotados. Por eso es seguro en
     // producción y NO necesita ningún flag para habilitarse.
     const code = params.code || 'return {};';
-    const timeoutMs = Math.max(50, Number(process.env.LF_JS_TIMEOUT_MS) || 5000);
-    const memoryMb = Math.max(8, Number(process.env.LF_JS_MEMORY_MB) || 128);
+    // Límites por nodo (params) con fallback a los globales de entorno.
+    const nodeTimeout = Number(params.jsTimeoutMs);
+    const nodeMemory = Number(params.jsMemoryMb);
+    const timeoutMs = Math.max(50, (Number.isFinite(nodeTimeout) && nodeTimeout > 0) ? nodeTimeout : (Number(process.env.LF_JS_TIMEOUT_MS) || 5000));
+    const memoryMb = Math.max(8, (Number.isFinite(nodeMemory) && nodeMemory > 0) ? nodeMemory : (Number(process.env.LF_JS_MEMORY_MB) || 128));
 
     // El contexto (salidas de nodos previos) se inyecta como COPIA — no hay referencias
     // vivas a objetos del host, así que el código aislado no puede mutar el estado real.
@@ -774,6 +839,13 @@ const loopNode: LibreFlowNodeDefinition = {
       label: 'Elementos a iterar',
       type: 'string',
       default: '[]'
+    },
+    {
+      name: 'batchSize',
+      label: 'Tamaño de lote (1 = uno a uno)',
+      type: 'string',
+      default: '1',
+      description: '>1 itera en lotes: el cuerpo recibe {{ $node.Loop.output.items }} (array del lote) en vez de .item.'
     }
   ],
   execute: async (params) => {
@@ -913,7 +985,8 @@ const dataTableNode: LibreFlowNodeDefinition = {
         { label: 'Insertar/Actualizar por clave (Upsert)', value: 'upsert' },
         { label: 'Incrementar contador (Increment)', value: 'increment' },
         { label: 'Obtener o crear por clave (Get or Default)', value: 'getOrDefault' },
-        { label: 'Consultar con operadores (Query)', value: 'query' }
+        { label: 'Consultar con operadores (Query)', value: 'query' },
+        { label: 'Lote atómico (Batch — todo o nada)', value: 'batch' }
       ]
     },
     {
@@ -970,6 +1043,14 @@ const dataTableNode: LibreFlowNodeDefinition = {
       description: 'Operadores: eq, ne, gt, lt, gte, lte, contains, in.'
     },
     {
+      name: 'batchOps',
+      label: 'Operaciones del lote (Batch, JSON)',
+      type: 'json',
+      default: '[]',
+      placeholder: '[{"op":"upsert","data":{"email":"a@b.com","saldo":10}},{"op":"increment","key":"a@b.com","field":"visitas","amount":1}]',
+      description: 'Array de ops aplicadas en una transacción (todo-o-nada). op: append|update|delete|upsert|increment.'
+    },
+    {
       name: 'sortColumn',
       label: 'Ordenar por (columna)',
       type: 'string',
@@ -1000,7 +1081,8 @@ const dataTableNode: LibreFlowNodeDefinition = {
 
     const {
       getDataTableRows, addDataTableRow, updateDataTableRow, deleteDataTableRow,
-      upsertDataTableRow, incrementDataTableRow, getOrCreateDataTableRow, queryDataTableRows
+      upsertDataTableRow, incrementDataTableRow, getOrCreateDataTableRow, queryDataTableRows,
+      batchDataTableRows
     } = await import('./db.js');
 
     // Coerces keyvalue pairs into a typed object (string→bool/number), shared by write ops.
@@ -1033,6 +1115,16 @@ const dataTableNode: LibreFlowNodeDefinition = {
     if (operation === 'getOrDefault') {
       if (!key) throw new Error('Data Table Node error: key is required for getOrDefault operation');
       return await getOrCreateDataTableRow(tableId, String(key), buildDataObject(fields));
+    }
+
+    if (operation === 'batch') {
+      let ops: any = params.batchOps;
+      if (typeof ops === 'string') {
+        try { ops = JSON.parse(ops || '[]'); } catch { throw new Error('Data Table Node error: batchOps must be valid JSON'); }
+      }
+      if (!Array.isArray(ops)) throw new Error('Data Table Node error: batchOps must be an array');
+      const applied = await batchDataTableRows(tableId, ops);
+      return { success: true, applied: applied.length, results: applied };
     }
 
     if (operation === 'query') {
@@ -1119,6 +1211,143 @@ const dataTableNode: LibreFlowNodeDefinition = {
     }
 
     throw new Error(`Data Table Node error: Unsupported operation: ${operation}`);
+  }
+};
+
+const extractFromFileNode: LibreFlowNodeDefinition = {
+  type: 'extractFromFile',
+  displayName: 'Extraer de Fichero',
+  category: 'Data',
+  icon: '📄',
+  description: 'Lee el CONTENIDO de un binario (CSV, Excel, JSON, texto) y lo convierte en datos estructurados utilizables por el flujo.',
+  ui: {
+    subtitle: 'Parsear fichero',
+    inputs: [{ id: 'main' }],
+    outputs: [{ id: 'main' }],
+    gradient: 'linear-gradient(135deg, hsl(140, 70%, 42%), hsl(170, 70%, 40%))'
+  },
+  parameters: [
+    {
+      name: 'source',
+      label: 'Binario de origen (referencia)',
+      type: 'string',
+      default: '',
+      placeholder: '{{ $node.Petición HTTP.output.body }}',
+      description: 'Expresión que resuelve a una referencia de binario ({_lfBinary,...}).'
+    },
+    {
+      name: 'format',
+      label: 'Formato',
+      type: 'options',
+      default: 'auto',
+      options: [
+        { label: 'Automático (por mime/extensión)', value: 'auto' },
+        { label: 'CSV', value: 'csv' },
+        { label: 'Excel (XLSX)', value: 'xlsx' },
+        { label: 'JSON', value: 'json' },
+        { label: 'Texto', value: 'text' }
+      ]
+    },
+    {
+      name: 'hasHeader',
+      label: 'CSV/Excel: primera fila es cabecera',
+      type: 'boolean',
+      default: true
+    },
+    {
+      name: 'sheetName',
+      label: 'Excel: nombre de hoja (vacío = primera)',
+      type: 'string',
+      default: ''
+    },
+    {
+      name: 'delimiter',
+      label: 'CSV: separador',
+      type: 'string',
+      default: ','
+    }
+  ],
+  execute: async (params) => {
+    const ref = params.source;
+    if (!isBinaryRef(ref)) {
+      throw new Error('Extraer de Fichero: "source" debe resolver a una referencia de binario (ej. {{ $node.X.output.body }}).');
+    }
+    const bin = await getBinary(ref._lfBinary);
+    if (!bin) throw new Error(`Extraer de Fichero: binario "${ref._lfBinary}" no encontrado.`);
+
+    const fmt: FileFormat = params.format && params.format !== 'auto'
+      ? params.format
+      : detectFormat({ mimeType: bin.mime_type || ref.mimeType, fileName: bin.file_name || ref.fileName });
+
+    return parseFileBuffer(bin.data, {
+      format: fmt,
+      hasHeader: params.hasHeader !== false,
+      sheetName: params.sheetName || undefined,
+      delimiter: params.delimiter || undefined,
+    });
+  }
+};
+
+const convertToFileNode: LibreFlowNodeDefinition = {
+  type: 'convertToFile',
+  displayName: 'Convertir a Fichero',
+  category: 'Data',
+  icon: '💾',
+  description: 'Serializa datos del flujo a un fichero (CSV, Excel, JSON, texto) y lo guarda como binario (descargable o subible vía HTTP).',
+  ui: {
+    subtitle: 'Generar fichero',
+    inputs: [{ id: 'main' }],
+    outputs: [{ id: 'main' }],
+    gradient: 'linear-gradient(135deg, hsl(210, 75%, 50%), hsl(245, 75%, 55%))'
+  },
+  parameters: [
+    {
+      name: 'format',
+      label: 'Formato',
+      type: 'options',
+      default: 'csv',
+      options: [
+        { label: 'CSV', value: 'csv' },
+        { label: 'Excel (XLSX)', value: 'xlsx' },
+        { label: 'JSON', value: 'json' },
+        { label: 'Texto', value: 'text' }
+      ]
+    },
+    {
+      name: 'data',
+      label: 'Datos (array de objetos para CSV/Excel)',
+      type: 'code',
+      default: '',
+      placeholder: '{{ $node.X.output.rows }}'
+    },
+    {
+      name: 'fileName',
+      label: 'Nombre de fichero (sin extensión)',
+      type: 'string',
+      default: 'output'
+    },
+    {
+      name: 'sheetName',
+      label: 'Excel: nombre de hoja',
+      type: 'string',
+      default: 'Sheet1'
+    }
+  ],
+  execute: async (params, _context, _inputs, execMeta) => {
+    const format: FileFormat = params.format || 'csv';
+    const { buffer, mimeType, ext } = serializeToFile({
+      format,
+      data: params.data,
+      sheetName: params.sheetName || undefined,
+    });
+
+    const base = String(params.fileName || 'output').replace(/\.[^.]+$/, '');
+    const fileName = `${base}.${ext}`;
+    return await storeBinary(buffer, {
+      executionId: execMeta?.executionId ?? null,
+      fileName,
+      mimeType,
+    });
   }
 };
 
@@ -1369,6 +1598,292 @@ const aiAgentNode: LibreFlowNodeDefinition = {
   }
 };
 
+// Operadores compartidos por filter / switch (reflejan collections.compareValues).
+const COMPARE_OPERATORS = [
+  { label: 'Igual', value: 'equal' },
+  { label: 'Distinto', value: 'notEqual' },
+  { label: 'Contiene', value: 'contains' },
+  { label: 'No contiene', value: 'notContains' },
+  { label: 'Empieza por', value: 'startsWith' },
+  { label: 'Termina por', value: 'endsWith' },
+  { label: 'Mayor que', value: 'greaterThan' },
+  { label: 'Mayor o igual', value: 'greaterOrEqual' },
+  { label: 'Menor que', value: 'lessThan' },
+  { label: 'Menor o igual', value: 'lessOrEqual' },
+  { label: 'Está vacío', value: 'isEmpty' },
+  { label: 'No está vacío', value: 'isNotEmpty' },
+  { label: 'Es verdadero', value: 'isTrue' },
+  { label: 'Es falso', value: 'isFalse' }
+];
+
+const switchNode: LibreFlowNodeDefinition = {
+  type: 'switch',
+  displayName: 'Conmutador (Switch)',
+  category: 'Flow',
+  icon: '⑂',
+  description: 'Enruta el flujo a una de varias salidas según reglas evaluadas en orden (primera que cumple gana). Multi-rama, a diferencia del IF binario.',
+  ui: {
+    subtitle: 'Enrutado multi-rama',
+    inputs: [{ id: 'main' }],
+    outputs: [
+      { id: '0', label: '0', topPercent: 18 },
+      { id: '1', label: '1', topPercent: 36 },
+      { id: '2', label: '2', topPercent: 54 },
+      { id: '3', label: '3', topPercent: 72 },
+      { id: 'default', label: 'default', topPercent: 90 }
+    ],
+    gradient: 'linear-gradient(135deg, hsl(320, 80%, 55%), hsl(285, 80%, 55%))'
+  },
+  parameters: [
+    {
+      name: 'value1',
+      label: 'Valor a evaluar',
+      type: 'string',
+      default: '',
+      placeholder: '{{ $node.X.output.tipo }}'
+    },
+    {
+      name: 'rules',
+      label: 'Reglas (JSON)',
+      type: 'json',
+      default: '[\n  { "operator": "equal", "value2": "A", "output": "0" },\n  { "operator": "equal", "value2": "B", "output": "1" }\n]',
+      placeholder: '[{"operator":"equal","value2":"A","output":"0"}]',
+      description: 'Cada regla: {operator, value2, output}. output = salida "0".."3". Primera regla que cumple gana.'
+    },
+    {
+      name: 'fallbackOutput',
+      label: 'Si ninguna regla cumple',
+      type: 'options',
+      default: 'default',
+      options: [
+        { label: 'Salida 0', value: '0' },
+        { label: 'Salida 1', value: '1' },
+        { label: 'Salida 2', value: '2' },
+        { label: 'Salida 3', value: '3' },
+        { label: 'Salida "default"', value: 'default' },
+        { label: 'Ninguna (descartar)', value: 'none' }
+      ]
+    }
+  ],
+  execute: async (params) => {
+    const v1 = params.value1;
+    let rules: any = params.rules;
+    if (typeof rules === 'string') {
+      try { rules = JSON.parse(rules || '[]'); } catch { throw new Error('Switch error: rules must be valid JSON'); }
+    }
+    if (!Array.isArray(rules)) rules = [];
+    let matched = params.fallbackOutput || 'default';
+    for (const r of rules) {
+      if (r && compareValues(v1, r.operator || 'equal', r.value2)) {
+        matched = String(r.output ?? 'default');
+        break;
+      }
+    }
+    return { matched, value1: v1 };
+  }
+};
+
+const filterNode: LibreFlowNodeDefinition = {
+  type: 'filter',
+  displayName: 'Filtrar (Filter)',
+  category: 'Data',
+  icon: '⛃',
+  description: 'Conserva los elementos de una lista que cumplen una condición. Devuelve la sublista (no bifurca el flujo).',
+  ui: {
+    subtitle: 'Filtrar lista',
+    inputs: [{ id: 'main' }],
+    outputs: [{ id: 'main' }],
+    gradient: 'linear-gradient(135deg, hsl(190, 75%, 45%), hsl(210, 75%, 50%))'
+  },
+  parameters: [
+    {
+      name: 'items',
+      label: 'Lista a filtrar',
+      type: 'string',
+      default: '[]',
+      placeholder: '{{ $node.X.output.rows }}'
+    },
+    {
+      name: 'field',
+      label: 'Campo a evaluar (vacío = el propio elemento)',
+      type: 'string',
+      default: '',
+      placeholder: 'status (admite ruta con puntos: a.b)'
+    },
+    {
+      name: 'operator',
+      label: 'Operador',
+      type: 'options',
+      default: 'equal',
+      options: COMPARE_OPERATORS
+    },
+    {
+      name: 'value',
+      label: 'Valor de comparación',
+      type: 'string',
+      default: ''
+    }
+  ],
+  execute: async (params) => {
+    let items: any = params.items;
+    if (typeof items === 'string') { try { items = JSON.parse(items); } catch { items = []; } }
+    return filterItems(items, { field: params.field, operator: params.operator, value: params.value });
+  }
+};
+
+const aggregateNode: LibreFlowNodeDefinition = {
+  type: 'aggregate',
+  displayName: 'Agregar (Aggregate)',
+  category: 'Data',
+  icon: '∑',
+  description: 'Opera sobre una lista: resumir (group by + sum/avg/min/max/count), ordenar, limitar o quitar duplicados.',
+  ui: {
+    subtitle: 'Resumir / ordenar lista',
+    inputs: [{ id: 'main' }],
+    outputs: [{ id: 'main' }],
+    gradient: 'linear-gradient(135deg, hsl(255, 70%, 55%), hsl(215, 70%, 50%))'
+  },
+  parameters: [
+    {
+      name: 'items',
+      label: 'Lista de entrada',
+      type: 'string',
+      default: '[]',
+      placeholder: '{{ $node.X.output.rows }}'
+    },
+    {
+      name: 'operation',
+      label: 'Operación',
+      type: 'options',
+      default: 'summarize',
+      options: [
+        { label: 'Resumir (group by + agregaciones)', value: 'summarize' },
+        { label: 'Ordenar', value: 'sort' },
+        { label: 'Limitar (primeros N)', value: 'limit' },
+        { label: 'Quitar duplicados', value: 'unique' }
+      ]
+    },
+    {
+      name: 'groupBy',
+      label: 'Resumir: agrupar por campo (vacío = todo)',
+      type: 'string',
+      default: ''
+    },
+    {
+      name: 'aggregations',
+      label: 'Resumir: agregaciones (JSON)',
+      type: 'json',
+      default: '[{ "fn": "count" }]',
+      placeholder: '[{"fn":"sum","field":"importe","as":"total"}]',
+      description: 'fn: count|sum|avg|min|max. field requerido salvo count. as = nombre de salida.'
+    },
+    {
+      name: 'sortField',
+      label: 'Ordenar/Duplicados: campo',
+      type: 'string',
+      default: ''
+    },
+    {
+      name: 'sortDir',
+      label: 'Ordenar: dirección',
+      type: 'options',
+      default: 'asc',
+      options: [
+        { label: 'Ascendente', value: 'asc' },
+        { label: 'Descendente', value: 'desc' }
+      ]
+    },
+    {
+      name: 'limit',
+      label: 'Limitar: N',
+      type: 'string',
+      default: '10'
+    }
+  ],
+  execute: async (params) => {
+    let items: any = params.items;
+    if (typeof items === 'string') { try { items = JSON.parse(items); } catch { items = []; } }
+    const op = params.operation || 'summarize';
+
+    if (op === 'summarize') {
+      let aggs: any = params.aggregations;
+      if (typeof aggs === 'string') { try { aggs = JSON.parse(aggs || '[]'); } catch { throw new Error('Aggregate error: aggregations must be valid JSON'); } }
+      const groups = summarize(items, { groupBy: params.groupBy || undefined, aggregations: Array.isArray(aggs) ? aggs as Aggregation[] : undefined });
+      return { items: groups, count: groups.length };
+    }
+    if (op === 'sort') {
+      const sorted = sortItems(items, { field: params.sortField, dir: params.sortDir === 'desc' ? 'desc' : 'asc' });
+      return { items: sorted, count: sorted.length };
+    }
+    if (op === 'limit') {
+      const n = Number(params.limit);
+      const out = limitItems(items, Number.isFinite(n) ? n : 10);
+      return { items: out, count: out.length };
+    }
+    if (op === 'unique') {
+      const out = uniqueItems(items, { field: params.sortField || undefined });
+      return { items: out, count: out.length };
+    }
+    throw new Error(`Aggregate error: operación no soportada "${op}"`);
+  }
+};
+
+const respondNode: LibreFlowNodeDefinition = {
+  type: 'respond',
+  displayName: 'Responder a Webhook',
+  category: 'Flow',
+  icon: '↩',
+  description: 'Define la respuesta HTTP que devuelve el webhook al llamante (estado, cabeceras, cuerpo). Solo surte efecto si el trigger webhook usa responseMode = "Nodo Responder".',
+  ui: {
+    subtitle: 'Respuesta HTTP a medida',
+    inputs: [{ id: 'main' }],
+    outputs: [{ id: 'main' }],
+    gradient: 'linear-gradient(135deg, hsl(160, 80%, 42%), hsl(190, 80%, 45%))'
+  },
+  parameters: [
+    {
+      name: 'responseStatus',
+      label: 'Código de estado',
+      type: 'string',
+      default: '200',
+      placeholder: '200'
+    },
+    {
+      name: 'responseContentType',
+      label: 'Content-Type',
+      type: 'string',
+      default: 'application/json',
+      placeholder: 'application/json, text/html, text/plain…'
+    },
+    {
+      name: 'responseHeaders',
+      label: 'Cabeceras',
+      type: 'keyvalue',
+      default: []
+    },
+    {
+      name: 'responseBody',
+      label: 'Cuerpo (admite expresiones {{ $node.X.output... }})',
+      type: 'code',
+      default: ''
+    }
+  ],
+  execute: async (params) => {
+    // El estado se acota a un rango HTTP válido; las cabeceras se filtran de claves peligrosas.
+    const status = Math.min(599, Math.max(100, Number(params.responseStatus) || 200));
+    const contentType = params.responseContentType || 'application/json';
+    const headers: Record<string, string> = {};
+    for (const h of params.responseHeaders || []) {
+      if (h && typeof h.key === 'string' && h.key && !isUnsafeKey(h.key)) {
+        headers[h.key] = String(h.value ?? '');
+      }
+    }
+    // La salida lleva la intención de respuesta bajo `_lfHttpResponse` (la captura el motor)
+    // y deja `body` accesible para nodos posteriores.
+    return { _lfHttpResponse: { status, headers, contentType, body: params.responseBody }, status, body: params.responseBody };
+  }
+};
+
 const waitNode: LibreFlowNodeDefinition = {
   type: 'wait',
   displayName: 'Esperar / Reanudar',
@@ -1412,7 +1927,13 @@ class NodeRegistryClass {
     this.register(loopNode);
     this.register(mcpToolCallNode);
     this.register(dataTableNode);
+    this.register(extractFromFileNode);
+    this.register(convertToFileNode);
+    this.register(switchNode);
+    this.register(filterNode);
+    this.register(aggregateNode);
     this.register(aiAgentNode);
+    this.register(respondNode);
     this.register(waitNode);
   }
 

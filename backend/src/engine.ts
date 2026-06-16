@@ -59,11 +59,20 @@ export interface NodeExecutionResult {
   durationMs?: number;
 }
 
+/** Custom HTTP response declared by a `respond` node, emitted by the webhook route. */
+export interface HttpResponseIntent {
+  status: number;
+  headers: Record<string, string>;
+  contentType: string;
+  body: any;
+}
+
 export interface WorkflowExecutionReport {
   success: boolean;
   suspended?: boolean;       // true when a `wait` node paused the run
   resumeToken?: string;      // present when suspended — POST /hooks/resume/:token to continue
   waitNodeId?: string;
+  httpResponse?: HttpResponseIntent; // set when a `respond` node ran (synchronous webhook)
   startTime: string;
   endTime: string;
   durationMs: number;
@@ -154,6 +163,9 @@ export class WorkflowEngine {
     const startTime = new Date();
     const nodeResults: Record<string, NodeExecutionResult> = {};
     const context: ExecutionContext = {};
+
+    // Captured from a `respond` node when it runs (the webhook route emits it). Last one wins.
+    let httpResponse: HttpResponseIntent | undefined;
 
     // Sub-workflow recursion guard metadata (threaded to executeWorkflow nodes).
     const execDepth = execMeta.depth ?? 0;
@@ -322,6 +334,11 @@ export class WorkflowEngine {
       }
       if (!Array.isArray(items)) items = [];
 
+      // batchSize > 1: itera en LOTES (el cuerpo recibe `items` = el trozo) en vez de uno a
+      // uno. Patrón de datos grandes (menos iteraciones; combina con dataTable batch). Por
+      // defecto 1 → comportamiento clásico item-a-item (`item`/`index`/`isLast`).
+      const batchSize = Math.max(1, Math.floor(Number(resolved.batchSize) || 1));
+
       const bodyIds = directBody(node.id);
 
       // The feedback node is the body node connected back into the loop.
@@ -332,14 +349,24 @@ export class WorkflowEngine {
       }
 
       const results: any[] = [];
-      for (let index = 0; index < items.length; index++) {
-        context[node.name] = {
-          output: { done: false, item: items[index], index, isLast: index === items.length - 1 }
-        };
+      const runIteration = async (output: any) => {
+        context[node.name] = { output };
         await runSubgraph(bodyIds);
         if (feedbackNodeId) {
           const fb = nodeMap.get(feedbackNodeId);
           if (fb && context[fb.name]) results.push(context[fb.name].output);
+        }
+      };
+
+      if (batchSize <= 1) {
+        for (let index = 0; index < items.length; index++) {
+          await runIteration({ done: false, item: items[index], index, isLast: index === items.length - 1 });
+        }
+      } else {
+        const batches = Math.ceil(items.length / batchSize);
+        for (let b = 0; b < batches; b++) {
+          const chunk = items.slice(b * batchSize, (b + 1) * batchSize);
+          await runIteration({ done: false, items: chunk, index: b, batchSize: chunk.length, isLast: b === batches - 1 });
         }
       }
 
@@ -423,6 +450,9 @@ export class WorkflowEngine {
           const prior = resume.priorResults[nodeId];
           if (prior) {
             nodeResults[nodeId] = prior;
+            if (node.type === 'respond' && prior.status === 'success' && prior.output?._lfHttpResponse) {
+              httpResponse = prior.output._lfHttpResponse;
+            }
             if (prior.status === 'skipped') {
               for (const conn of outgoingMap.get(nodeId) || []) propagate(conn, 'skipped');
             } else {
@@ -433,6 +463,8 @@ export class WorkflowEngine {
                   const r = prior.output?.result;
                   if (conn.sourceHandle === 'true' && !r) pathStatus = 'skipped';
                   else if (conn.sourceHandle === 'false' && r) pathStatus = 'skipped';
+                } else if (node.type === 'switch') {
+                  if (conn.sourceHandle !== prior.output?.matched) pathStatus = 'skipped';
                 }
                 propagate(conn, pathStatus);
               }
@@ -476,6 +508,11 @@ export class WorkflowEngine {
 
         const { output, ok } = await runNode(node, incomingInputs);
 
+        // A `respond` node declares the synchronous HTTP response for the webhook route.
+        if (ok && node.type === 'respond' && output && output._lfHttpResponse) {
+          httpResponse = output._lfHttpResponse;
+        }
+
         for (const conn of outgoingMap.get(nodeId) || []) {
           // A failed-but-continued branching node can't have its handles evaluated → skip.
           if (!ok && node.type === 'if') {
@@ -492,6 +529,9 @@ export class WorkflowEngine {
             const ifResult = output?.result;
             if (conn.sourceHandle === 'true' && !ifResult) pathStatus = 'skipped';
             else if (conn.sourceHandle === 'false' && ifResult) pathStatus = 'skipped';
+          } else if (node.type === 'switch') {
+            // Solo continúa la salida que coincide con la rama elegida; el resto se omite.
+            if (conn.sourceHandle !== output?.matched) pathStatus = 'skipped';
           }
           propagate(conn, pathStatus);
         }
@@ -509,6 +549,7 @@ export class WorkflowEngine {
           suspended: true,
           resumeToken: err.token,
           waitNodeId: err.waitNodeId,
+          httpResponse,
           startTime: startTime.toISOString(),
           endTime: endTime.toISOString(),
           durationMs: endTime.getTime() - startTime.getTime(),
@@ -540,6 +581,7 @@ export class WorkflowEngine {
 
     return {
       success: allSuccessful,
+      httpResponse,
       startTime: startTime.toISOString(),
       endTime: endTime.toISOString(),
       durationMs: endTime.getTime() - startTime.getTime(),
