@@ -632,50 +632,18 @@
     />
 
     <!-- Create/Edit MCP Server Modal -->
-    <div v-if="showMcpServerModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
-      <div class="modal-content" style="width: 560px; max-width: 95%;">
-        <h3 class="modal-title">{{ editingMcpServerId ? 'Editar Servidor MCP' : 'Crear Servidor MCP' }}</h3>
-        <p class="modal-desc">Selecciona los flujos que se expondrán como herramientas. El servidor tendrá su propia URL pública.</p>
-
-        <div class="form-group" style="margin-top: 12px;">
-          <label class="config-label">Nombre del Servidor</label>
-          <input v-model="mcpServerName" placeholder="ej: Herramientas de Ventas" class="config-input" />
-        </div>
-
-        <div class="form-group" style="margin-top: 16px;">
-          <label class="config-label">Flujos expuestos como tools</label>
-          <div style="max-height: 220px; overflow-y: auto; margin-top: 8px; border: 1px solid hsla(var(--text-muted) / 0.2); border-radius: 8px; padding: 8px;">
-            <label v-for="flow in savedWorkflowsList" :key="flow.id" style="display: flex; align-items: center; gap: 8px; padding: 6px 4px; cursor: pointer; font-size: 13px;">
-              <input type="checkbox" :checked="mcpServerWorkflowIds.includes(flow.id)" @change="toggleMcpWorkflow(flow.id)" style="width: 15px; height: 15px;" />
-              <span>{{ flow.name }}</span>
-            </label>
-            <div v-if="savedWorkflowsList.length === 0" style="font-size: 12px; color: hsl(var(--text-muted)); text-align: center; padding: 12px;">
-              No hay flujos guardados todavía.
-            </div>
-          </div>
-        </div>
-
-        <div class="form-group" style="margin-top: 16px; display: flex; align-items: center; gap: 8px;">
-          <input id="mcp-require-auth" v-model="mcpServerRequireAuth" type="checkbox" style="width: 15px; height: 15px;" />
-          <label for="mcp-require-auth" style="font-size: 13px; cursor: pointer;">Requerir token (Bearer) para conectarse</label>
-        </div>
-        <div class="form-group" style="margin-top: 8px; display: flex; align-items: center; gap: 8px;">
-          <input id="mcp-system-tools" v-model="mcpServerExposeSystem" type="checkbox" style="width: 15px; height: 15px;" />
-          <label for="mcp-system-tools" style="font-size: 13px; cursor: pointer;">Exponer también las herramientas de sistema (libreflow_*)</label>
-        </div>
-
-        <div class="modal-actions" style="margin-top: 24px;">
-          <button @click="showMcpServerModal = false" class="btn btn-secondary">Cancelar</button>
-          <button
-            @click="saveMcpServerToDb"
-            class="btn btn-primary"
-            :disabled="!mcpServerName.trim() || mcpServerWorkflowIds.length === 0"
-          >
-            Guardar
-          </button>
-        </div>
-      </div>
-    </div>
+    <McpServerModal
+      v-if="showMcpServerModal"
+      :editing-mcp-server-id="editingMcpServerId"
+      v-model:name="mcpServerName"
+      v-model:require-auth="mcpServerRequireAuth"
+      v-model:expose-system="mcpServerExposeSystem"
+      :workflows="savedWorkflowsList"
+      :selected-workflow-ids="mcpServerWorkflowIds"
+      @toggle-workflow="toggleMcpWorkflow"
+      @close="showMcpServerModal = false"
+      @save="saveMcpServerToDb"
+    />
 
     <!-- BATCH VALIDATION MODAL -->
     <div v-if="showBatchValidateModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
@@ -773,6 +741,7 @@ import DataTableDetail from './components/DataTableDetail.vue';
 import SaveWorkflowModal from './components/SaveWorkflowModal.vue';
 import AddRowModal from './components/AddRowModal.vue';
 import DataTableModal from './components/DataTableModal.vue';
+import McpServerModal from './components/McpServerModal.vue';
 import McpServersView from './components/McpServersView.vue';
 import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
