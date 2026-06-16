@@ -97,7 +97,9 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   unknown node types, dangling connections, invalid output handles, duplicate names, and
   **hanging `{{ $node.X.output }}` expressions** (catches the rename-breakage). Returns
   `{ ok, errors, warnings, issues[] }`. Run on save (non-blocking, returned to the client) and
-  exposed at `POST /api/workflows/validate`.
+  exposed at `POST /api/workflows/validate`. `validateWorkflows` (batch) backs `POST
+  /api/workflows/validate-batch` — validate many saved flows, filtered by `ids` or `contains`
+  (graph substring, e.g. an API host) for the "fix all flows tied to one API" pass.
 - **errorContext.ts** — `buildExecutionLlmContext` (pure): from a failed execution builds a
   structured `{ failedNode, ... }` + a **pre-armed Spanish prompt** to paste into an LLM/agent
   (flow, execution id, failed node + error, instruction). Exposed at

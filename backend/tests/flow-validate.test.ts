@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateWorkflow } from '../src/flowValidate.js';
+import { validateWorkflow, validateWorkflows } from '../src/flowValidate.js';
 import { buildExecutionLlmContext } from '../src/errorContext.js';
 
 describe('validateWorkflow', () => {
@@ -85,6 +85,30 @@ describe('validateWorkflow', () => {
       ],
     });
     expect(r.issues.filter(i => i.level === 'error')).toEqual([]);
+  });
+});
+
+describe('validateWorkflows (lote)', () => {
+  it('agrega resultados y resume errores/avisos', () => {
+    const r = validateWorkflows([
+      { id: 'ok', name: 'OK', nodes: [{ id: 't', type: 'trigger', name: 'Start', parameters: {} }], connections: [] },
+      { id: 'bad', name: 'Roto', nodes: [
+        { id: 't', type: 'trigger', name: 'Start', parameters: {} },
+        { id: 'l', type: 'log', name: 'Log', parameters: { message: '{{ $node.NoExiste.output.x }}' } },
+      ], connections: [{ source: 't', target: 'l' }] },
+      { id: 'warn', name: 'Aviso', nodes: [{ id: 'a', type: 'set', name: 'S', parameters: {} }], connections: [] },
+    ]);
+    expect(r.summary.total).toBe(3);
+    expect(r.summary.withErrors).toBe(1);
+    expect(r.summary.withWarnings).toBeGreaterThanOrEqual(1); // 'warn' no tiene trigger
+    expect(r.workflows.find(w => w.id === 'ok')!.ok).toBe(true);
+    expect(r.workflows.find(w => w.id === 'bad')!.ok).toBe(false);
+  });
+
+  it('lista vacía → resumen en cero', () => {
+    const r = validateWorkflows([]);
+    expect(r.summary).toEqual({ total: 0, withErrors: 0, withWarnings: 0 });
+    expect(r.workflows).toEqual([]);
   });
 });
 

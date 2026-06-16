@@ -33,7 +33,8 @@ import {
   getMcpServerById,
   saveMcpServer,
   deleteMcpServer,
-  getBinary
+  getBinary,
+  getAllWorkflowsWithGraph
 } from './db.js';
 import { triggerManager } from './triggerManager.js';
 import { NodeRegistry } from './registry.js';
@@ -42,7 +43,7 @@ import { requireAuth, verifyWebhookSignature } from './auth.js';
 import { rateLimit } from './security.js';
 import { buildAuthorizationUrl, handleOAuthCallback } from './oauth2.js';
 import { parseFormFields, renderFormPage, renderCompletionPage, validateFormValues } from './forms.js';
-import { validateWorkflow } from './flowValidate.js';
+import { validateWorkflow, validateWorkflows } from './flowValidate.js';
 import { buildExecutionLlmContext } from './errorContext.js';
 import crypto from 'crypto';
 
@@ -231,6 +232,28 @@ app.post('/api/workflows/validate', async (req, res) => {
   try {
     const { nodes, connections } = req.body || {};
     return res.json(validateWorkflow({ nodes: nodes || [], connections: connections || [] }));
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+// Valida en lote los flujos guardados. Sin filtros valida todos; `ids` valida ese conjunto;
+// `contains` selecciona los flujos cuyo grafo menciona esa cadena (p.ej. el host de una API),
+// para el patrón "arregla en una sesión todos los flujos vinculados a la misma API".
+app.post('/api/workflows/validate-batch', async (req, res) => {
+  try {
+    const { ids, contains } = req.body || {};
+    const all = await getAllWorkflowsWithGraph();
+    let selected = all;
+    if (Array.isArray(ids) && ids.length) {
+      const set = new Set(ids.map(String));
+      selected = selected.filter(w => set.has(w.id));
+    }
+    if (typeof contains === 'string' && contains.trim()) {
+      const needle = contains.trim();
+      selected = selected.filter(w => JSON.stringify(w.nodes).includes(needle));
+    }
+    return res.json(validateWorkflows(selected));
   } catch (err: any) {
     return serverError(res, err);
   }
