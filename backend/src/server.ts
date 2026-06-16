@@ -33,7 +33,8 @@ import {
   getMcpServerById,
   saveMcpServer,
   deleteMcpServer,
-  getBinary
+  getBinary,
+  getAllWorkflowsWithGraph
 } from './db.js';
 import { triggerManager } from './triggerManager.js';
 import { NodeRegistry } from './registry.js';
@@ -42,6 +43,8 @@ import { requireAuth, verifyWebhookSignature } from './auth.js';
 import { rateLimit } from './security.js';
 import { buildAuthorizationUrl, handleOAuthCallback } from './oauth2.js';
 import { parseFormFields, renderFormPage, renderCompletionPage, validateFormValues } from './forms.js';
+import { validateWorkflow, validateWorkflows } from './flowValidate.js';
+import { buildExecutionLlmContext } from './errorContext.js';
 import crypto from 'crypto';
 
 const app = express();
@@ -205,7 +208,10 @@ app.post('/api/workflows', async (req, res) => {
       }
     }
 
-    return res.json({ success: true, message: 'Workflow saved successfully' });
+    // Validación de coherencia (no bloqueante): se guarda igual, pero el cliente recibe los
+    // avisos (expresiones colgando, handles inválidos, etc.) para mostrarlos.
+    const validation = validateWorkflow({ nodes: nodes || [], connections: connections || [] });
+    return res.json({ success: true, message: 'Workflow saved successfully', validation });
   } catch (err: any) {
     return serverError(res, err);
   }
@@ -215,6 +221,39 @@ app.delete('/api/workflows/:id', async (req, res) => {
   try {
     await deleteWorkflow(req.params.id);
     return res.json({ success: true, message: 'Workflow deleted successfully' });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+// Valida la coherencia estructural de un flujo sin guardarlo (tipos, conexiones, handles,
+// expresiones colgando). Útil tras un fix en lote antes de dar el flujo por bueno.
+app.post('/api/workflows/validate', async (req, res) => {
+  try {
+    const { nodes, connections } = req.body || {};
+    return res.json(validateWorkflow({ nodes: nodes || [], connections: connections || [] }));
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+// Valida en lote los flujos guardados. Sin filtros valida todos; `ids` valida ese conjunto;
+// `contains` selecciona los flujos cuyo grafo menciona esa cadena (p.ej. el host de una API),
+// para el patrón "arregla en una sesión todos los flujos vinculados a la misma API".
+app.post('/api/workflows/validate-batch', async (req, res) => {
+  try {
+    const { ids, contains } = req.body || {};
+    const all = await getAllWorkflowsWithGraph();
+    let selected = all;
+    if (Array.isArray(ids) && ids.length) {
+      const set = new Set(ids.map(String));
+      selected = selected.filter(w => set.has(w.id));
+    }
+    if (typeof contains === 'string' && contains.trim()) {
+      const needle = contains.trim();
+      selected = selected.filter(w => JSON.stringify(w.nodes).includes(needle));
+    }
+    return res.json(validateWorkflows(selected));
   } catch (err: any) {
     return serverError(res, err);
   }
@@ -246,6 +285,30 @@ app.get('/api/executions/:id', async (req, res) => {
       return res.status(404).json({ error: 'Execution not found' });
     }
     return res.json(execution);
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+// Contexto pre-armado para el LLM a partir de una ejecución (típicamente fallida): qué nodo
+// falló, con qué error, dónde verlo + una instrucción lista para pegar a un agente.
+app.get('/api/executions/:id/llm-context', async (req, res) => {
+  try {
+    const execution = await getExecutionById(req.params.id);
+    if (!execution) {
+      return res.status(404).json({ error: 'Execution not found' });
+    }
+    let workflowName: string | undefined;
+    let nodeTypeById: Record<string, string> | undefined;
+    if (execution.workflow_id) {
+      const wf = await getWorkflowById(execution.workflow_id);
+      if (wf) {
+        workflowName = wf.name;
+        nodeTypeById = {};
+        for (const n of wf.nodes || []) nodeTypeById[n.id] = n.type;
+      }
+    }
+    return res.json(buildExecutionLlmContext(execution, { workflowName, nodeTypeById }));
   } catch (err: any) {
     return serverError(res, err);
   }

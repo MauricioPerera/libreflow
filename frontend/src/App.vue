@@ -49,9 +49,14 @@
             <h2 class="subview-title">Flujos de Trabajo</h2>
             <p class="subview-desc">Crea y administra tus automatizaciones de procesos.</p>
           </div>
-          <button @click="createNewWorkflow" class="btn btn-primary">
-            + Crear Flujo
-          </button>
+          <div style="display: flex; gap: 10px;">
+            <button @click="openBatchValidate" class="btn btn-secondary">
+              🔍 Validar coherencia
+            </button>
+            <button @click="createNewWorkflow" class="btn btn-primary">
+              + Crear Flujo
+            </button>
+          </div>
         </div>
 
         <div class="table-container">
@@ -188,11 +193,20 @@
                 </td>
                 <td>
                   <span :class="['status-badge', exec.status]">
-                    {{ exec.status === 'success' ? 'Éxito' : 'Fallo' }}
+                    {{ statusLabel(exec.status) }}
                   </span>
                 </td>
                 <td>{{ formatFullDate(exec.executed_at) }}</td>
-                <td style="text-align: right;">
+                <td style="text-align: right; white-space: nowrap;">
+                  <button
+                    v-if="exec.status === 'failed'"
+                    @click="openAiContext(exec.id)"
+                    class="btn btn-secondary"
+                    style="padding: 6px 12px; font-size: 12px; margin-right: 6px;"
+                    title="Copiar contexto del error para dárselo a una IA"
+                  >
+                    🤖 Contexto IA
+                  </button>
                   <button @click="loadPastExecutionFromDashboard(exec.id, exec.workflow_id)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">
                     Ver Ejecución
                   </button>
@@ -513,6 +527,28 @@
 
       <!-- Vue Flow Canvas -->
       <section class="canvas-container">
+        <!-- Validador de coherencia: resultado del último guardado -->
+        <div v-if="showValidationBanner && validationIssues.length" class="validation-banner" role="status">
+          <div class="validation-banner-head">
+            <strong>
+              {{ validationErrorCount > 0 ? '⚠️ Problemas de coherencia' : 'ℹ️ Avisos de coherencia' }}
+              ({{ validationErrorCount }} error{{ validationErrorCount === 1 ? '' : 'es' }},
+              {{ validationIssues.length - validationErrorCount }} aviso{{ (validationIssues.length - validationErrorCount) === 1 ? '' : 's' }})
+            </strong>
+            <button class="validation-banner-close" @click="showValidationBanner = false" aria-label="Cerrar">✕</button>
+          </div>
+          <ul class="validation-banner-list">
+            <li
+              v-for="(issue, i) in validationIssues"
+              :key="i"
+              :class="['validation-issue', issue.level, { clickable: !!issue.nodeId }]"
+              @click="issue.nodeId && focusIssueNode(issue.nodeId)"
+            >
+              <span class="validation-dot" :class="issue.level"></span>
+              {{ issue.message }}
+            </li>
+          </ul>
+        </div>
         <VueFlow
           v-model:nodes="nodes"
           v-model:edges="edges"
@@ -1060,6 +1096,85 @@
         </div>
       </div>
     </div>
+
+    <!-- BATCH VALIDATION MODAL -->
+    <div v-if="showBatchValidateModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
+      <div class="modal-content" style="width: 680px; max-width: 95%;">
+        <h3 class="modal-title">🔍 Validar coherencia de flujos</h3>
+        <p class="modal-desc">Valida los flujos guardados en lote. Deja el filtro vacío para validar todos, o escribe un host/cadena (p.ej. <code>api.stripe.com</code>) para validar solo los que lo usan.</p>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <input
+            v-model="batchContains"
+            type="text"
+            placeholder="Filtrar por API/cadena (vacío = todos)"
+            style="flex: 1; padding: 10px 12px; border-radius: 8px;"
+            @keyup.enter="runBatchValidate"
+          />
+          <button @click="runBatchValidate" class="btn btn-primary" :disabled="batchValidating">
+            {{ batchValidating ? 'Validando…' : 'Validar' }}
+          </button>
+        </div>
+
+        <div v-if="batchResult" style="margin-top: 16px;">
+          <p class="modal-desc" style="margin-bottom: 10px;">
+            {{ batchResult.summary.total }} flujo(s) ·
+            <span :style="{ color: batchResult.summary.withErrors ? 'hsl(var(--color-danger))' : 'inherit' }">{{ batchResult.summary.withErrors }} con errores</span> ·
+            {{ batchResult.summary.withWarnings }} con avisos
+          </p>
+          <div style="max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+            <div
+              v-for="wf in batchResult.workflows"
+              :key="wf.id"
+              v-show="wf.issues.length"
+              class="validation-banner"
+              style="position: static; width: auto; transform: none; box-shadow: none;"
+            >
+              <div class="validation-banner-head">
+                <strong style="cursor: pointer;" @click="loadWorkflowForEdit(wf.id); closeAllModals();">
+                  {{ wf.ok ? 'ℹ️' : '⚠️' }} {{ wf.name }}
+                  <span style="font-weight: 400; opacity: 0.7;">({{ wf.errors }}e / {{ wf.warnings }}a)</span>
+                </strong>
+              </div>
+              <ul class="validation-banner-list">
+                <li v-for="(issue, i) in wf.issues" :key="i" :class="['validation-issue', issue.level]">
+                  <span class="validation-dot" :class="issue.level"></span>{{ issue.message }}
+                </li>
+              </ul>
+            </div>
+            <p v-if="batchResult.summary.withErrors === 0 && batchResult.summary.withWarnings === 0" class="empty-table-message">
+              ✓ Todos los flujos validados son coherentes.
+            </p>
+          </div>
+        </div>
+
+        <div class="modal-actions" style="margin-top: 16px;">
+          <button @click="closeAllModals()" class="btn btn-secondary">Cerrar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI ERROR CONTEXT MODAL -->
+    <div v-if="showAiContextModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
+      <div class="modal-content" style="width: 640px; max-width: 95%;">
+        <h3 class="modal-title">🤖 Contexto del error para la IA</h3>
+        <p class="modal-desc">Instrucción lista para pegar a tu agente/LLM: incluye el flujo, la ejecución y el nodo que falló con su error.</p>
+        <div v-if="aiContextLoading" class="empty-table-message">Generando contexto…</div>
+        <template v-else>
+          <textarea
+            ref="aiContextTextarea"
+            :value="aiContextText"
+            readonly
+            style="width: 100%; min-height: 220px; font-family: var(--font-mono, monospace); font-size: 13px; padding: 12px; border-radius: 8px;"
+          ></textarea>
+        </template>
+        <div class="modal-actions" style="margin-top: 16px;">
+          <button @click="closeAllModals()" class="btn btn-secondary">Cerrar</button>
+          <button @click="copyAiContext" class="btn btn-primary" :disabled="aiContextLoading">
+            {{ aiContextCopied ? '✓ Copiado' : 'Copiar al portapapeles' }}
+          </button>
+        </div>
+      </div>
+    </div>
 </template>
 
 <script setup lang="ts">
@@ -1229,7 +1344,76 @@ const closeAllModals = () => {
   showRowModal.value = false;
   showExpressionModal.value = false;
   showMcpServerModal.value = false;
+  showAiContextModal.value = false;
+  showBatchValidateModal.value = false;
   expressionTarget.value = null;
+};
+
+// --- Validación en lote (POST /api/workflows/validate-batch) ---
+const showBatchValidateModal = ref(false);
+const batchContains = ref('');
+const batchValidating = ref(false);
+const batchResult = ref<any | null>(null);
+
+const openBatchValidate = () => {
+  batchResult.value = null;
+  batchContains.value = '';
+  showBatchValidateModal.value = true;
+};
+
+const runBatchValidate = async () => {
+  if (batchValidating.value) return;
+  batchValidating.value = true;
+  try {
+    const body = batchContains.value.trim() ? { contains: batchContains.value.trim() } : {};
+    const res = await fetch('/api/workflows/validate-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    batchResult.value = await res.json();
+  } catch (err) {
+    console.error('Error validando en lote:', err);
+    alert('No se pudo validar en lote. Revisa la conexión.');
+  } finally {
+    batchValidating.value = false;
+  }
+};
+
+// --- AI error-context (pre-armed LLM prompt from a failed execution) ---
+const showAiContextModal = ref(false);
+const aiContextLoading = ref(false);
+const aiContextText = ref('');
+const aiContextCopied = ref(false);
+
+const statusLabel = (status: string): string => ({
+  success: 'Éxito', failed: 'Fallo', running: 'En curso', waiting: 'En espera',
+}[status] || status);
+
+const openAiContext = async (execId: string) => {
+  showAiContextModal.value = true;
+  aiContextLoading.value = true;
+  aiContextCopied.value = false;
+  aiContextText.value = '';
+  try {
+    const ctx = await apiGetJson<{ prompt: string }>(`/api/executions/${execId}/llm-context`);
+    aiContextText.value = ctx.prompt;
+  } catch (err: any) {
+    aiContextText.value = `No se pudo generar el contexto: ${err?.message || err}`;
+  } finally {
+    aiContextLoading.value = false;
+  }
+};
+
+const copyAiContext = async () => {
+  try {
+    await navigator.clipboard.writeText(aiContextText.value);
+    aiContextCopied.value = true;
+    setTimeout(() => { aiContextCopied.value = false; }, 2000);
+  } catch {
+    // Clipboard bloqueado (http/permisos): el textarea permite copiar a mano.
+    aiContextCopied.value = false;
+  }
 };
 
 // Stores reports from the backend
@@ -1327,6 +1511,21 @@ const onNodeClick = (event: any) => {
 
 const onPaneClick = () => {
   selectedNode.value = null;
+};
+
+// --- Validador de coherencia (resultado del guardado) ---
+interface FlowIssue { level: 'error' | 'warning'; code: string; nodeId?: string; nodeName?: string; message: string }
+const validationIssues = ref<FlowIssue[]>([]);
+const showValidationBanner = ref(false);
+const validationErrorCount = computed(() => validationIssues.value.filter(i => i.level === 'error').length);
+
+// Selecciona en el canvas el nodo señalado por un issue (abre su panel de configuración).
+const focusIssueNode = (nodeId: string) => {
+  const node = nodes.value.find(n => n.id === nodeId);
+  if (node) {
+    selectedNode.value = node;
+    activeTab.value = 'config';
+  }
 };
 
 const updateNodeParams = (params: any) => {
@@ -1792,6 +1991,12 @@ const saveWorkflowToDb = async () => {
       activeWorkflowName.value = name;
       showSaveModal.value = false;
       isDirty.value = false; // saved — no unsaved changes
+      // Surface the (non-blocking) coherence validation returned by the save.
+      try {
+        const data = await res.json();
+        validationIssues.value = data?.validation?.issues || [];
+        showValidationBanner.value = validationIssues.value.length > 0;
+      } catch { validationIssues.value = []; showValidationBanner.value = false; }
       await fetchSavedWorkflows();
       await fetchWorkflowExecutions(id);
       await fetchWorkflowVersions(id);

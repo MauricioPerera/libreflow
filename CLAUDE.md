@@ -93,11 +93,24 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   Webhooks (`/hooks/:id`) honor the trigger's `responseMode`: `onReceived` (immediate ack +
   background run, the legacy default) vs synchronous `lastNode`/`respondNode` (await the run,
   bounded by `LF_WEBHOOK_SYNC_TIMEOUT_MS`, then emit `report.httpResponse`).
+- **flowValidate.ts** — `validateWorkflow` (pure, uses registry): structural coherence checks —
+  unknown node types, dangling connections, invalid output handles, duplicate names, and
+  **hanging `{{ $node.X.output }}` expressions** (catches the rename-breakage). Returns
+  `{ ok, errors, warnings, issues[] }`. Run on save (non-blocking, returned to the client) and
+  exposed at `POST /api/workflows/validate`. `validateWorkflows` (batch) backs `POST
+  /api/workflows/validate-batch` — validate many saved flows, filtered by `ids` or `contains`
+  (graph substring, e.g. an API host) for the "fix all flows tied to one API" pass.
+- **errorContext.ts** — `buildExecutionLlmContext` (pure): from a failed execution builds a
+  structured `{ failedNode, ... }` + a **pre-armed Spanish prompt** to paste into an LLM/agent
+  (flow, execution id, failed node + error, instruction). Exposed at
+  `GET /api/executions/:id/llm-context`; surfaced in the UI as a "🤖 Contexto IA" button on
+  failed executions.
 - **collections.ts** — pure local-collection primitives (no DB): `compareValues`, `filterItems`,
   `summarize` (group by + count/sum/avg/min/max), `sortItems`, `limitItems`, `uniqueItems`,
   `getPath` (dotted paths). Backs the switch/filter/aggregate nodes.
 - **fileParse.ts** — pure parse/serialize of file CONTENT via SheetJS (`xlsx`): `parseFileBuffer`
-  / `serializeToFile` / `detectFormat` for CSV/XLSX/JSON/text. Sanitizes object keys on parse
+  / `serializeToFile` / `detectFormat` for CSV/XLSX/JSON/text, plus `parsePdfBuffer` (async, PDF
+  text extraction via `pdf-parse` v2 / pdf.js — extract-only). Sanitizes object keys on parse
   (`isUnsafeKey`) to mitigate SheetJS 0.18.x prototype pollution. Used by the
   extractFromFile/convertToFile nodes; the bytes live in the binary store, never inline.
 - **forms.ts** — public **form trigger** rendering (no DB, no state): `renderFormPage` /
@@ -121,7 +134,13 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   Ejecuciones, Credenciales, Tablas de Datos, **Servidores MCP** (CRUD a named server's
   workflow group + token + URL). Calls the backend via `/api` (Vite proxy). `apiGetJson`
   checks `res.ok`; `applyExecutionResults` is the shared node/edge status-styling helper.
-  Unsaved-changes are tracked via `isDirty` (+ beforeunload).
+  Unsaved-changes are tracked via `isDirty` (+ beforeunload). The Ejecuciones view shows a
+  status badge per run and a "🤖 Contexto IA" button on failed runs (fetches
+  `/api/executions/:id/llm-context` into a copy-to-clipboard modal). On save, the editor
+  paints the coherence `validation` returned by the API as a floating banner over the canvas
+  (errors/warnings; clicking an issue selects the offending node via `focusIssueNode`). The
+  Flujos view has a "🔍 Validar coherencia" action (modal) that runs the batch validator with
+  an optional API/substring filter and lists per-flow issues (click a flow → open it).
 - **components/** — `CustomNode`, `NodeConfigPanel` (param form, inline JSON/cron validation),
   `ExpressionEditor`, `JsonTreeItem`.
 - **focusTrap.ts** — global `v-focus-trap` directive for modals (Esc + click-outside + ARIA

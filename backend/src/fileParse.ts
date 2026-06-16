@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx';
+import { PDFParse } from 'pdf-parse';
 import { isUnsafeKey } from './security.js';
 
 /**
@@ -11,16 +12,34 @@ import { isUnsafeKey } from './security.js';
  * (`__proto__`, etc.) — mitiga el prototype-pollution conocido de SheetJS 0.18.x.
  */
 
-export type FileFormat = 'csv' | 'xlsx' | 'json' | 'text';
+export type FileFormat = 'csv' | 'xlsx' | 'json' | 'text' | 'pdf';
 
 /** Deriva el formato desde el mimeType / nombre de fichero (modo "auto"). */
 export function detectFormat(opts: { mimeType?: string; fileName?: string }): FileFormat {
   const n = (opts.fileName || '').toLowerCase();
   const m = (opts.mimeType || '').toLowerCase();
+  if (n.endsWith('.pdf') || m.includes('pdf')) return 'pdf';
   if (n.endsWith('.xlsx') || n.endsWith('.xls') || m.includes('spreadsheet') || m.includes('ms-excel')) return 'xlsx';
   if (n.endsWith('.csv') || m.includes('csv')) return 'csv';
   if (n.endsWith('.json') || m.includes('json')) return 'json';
   return 'text';
+}
+
+/**
+ * Extrae el TEXTO de un PDF (async; usa pdf-parse v2 sobre pdf.js). Devuelve el texto por
+ * páginas unido y el número de páginas. Solo extracción — generar PDF no está soportado.
+ */
+export async function parsePdfBuffer(buf: Buffer): Promise<{ format: 'pdf'; text: string; pages: number }> {
+  const parser = new PDFParse({ data: new Uint8Array(buf) });
+  try {
+    const r: any = await parser.getText();
+    const text = Array.isArray(r.pages)
+      ? r.pages.map((p: any) => p.text).join('\n\n')
+      : (r.text || '');
+    return { format: 'pdf', text, pages: r.total ?? (Array.isArray(r.pages) ? r.pages.length : 0) };
+  } finally {
+    try { await (parser as any).destroy?.(); } catch { /* noop */ }
+  }
 }
 
 /** Elimina recursivamente claves peligrosas de objetos/arrays planos. */
