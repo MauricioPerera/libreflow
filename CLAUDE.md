@@ -93,6 +93,16 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   Webhooks (`/hooks/:id`) honor the trigger's `responseMode`: `onReceived` (immediate ack +
   background run, the legacy default) vs synchronous `lastNode`/`respondNode` (await the run,
   bounded by `LF_WEBHOOK_SYNC_TIMEOUT_MS`, then emit `report.httpResponse`).
+- **flowValidate.ts** — `validateWorkflow` (pure, uses registry): structural coherence checks —
+  unknown node types, dangling connections, invalid output handles, duplicate names, and
+  **hanging `{{ $node.X.output }}` expressions** (catches the rename-breakage). Returns
+  `{ ok, errors, warnings, issues[] }`. Run on save (non-blocking, returned to the client) and
+  exposed at `POST /api/workflows/validate`.
+- **errorContext.ts** — `buildExecutionLlmContext` (pure): from a failed execution builds a
+  structured `{ failedNode, ... }` + a **pre-armed Spanish prompt** to paste into an LLM/agent
+  (flow, execution id, failed node + error, instruction). Exposed at
+  `GET /api/executions/:id/llm-context`; surfaced in the UI as a "🤖 Contexto IA" button on
+  failed executions.
 - **collections.ts** — pure local-collection primitives (no DB): `compareValues`, `filterItems`,
   `summarize` (group by + count/sum/avg/min/max), `sortItems`, `limitItems`, `uniqueItems`,
   `getPath` (dotted paths). Backs the switch/filter/aggregate nodes.
