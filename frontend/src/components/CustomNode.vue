@@ -5,6 +5,7 @@
         {{ nodeDef?.icon || '⚡' }}
       </span>
       <span>{{ data.name }}</span>
+      <span v-if="data.pinData !== undefined" title="Salida fijada (pin): no se re-ejecuta en pruebas" style="margin-left: auto; font-size: 13px;">📌</span>
     </div>
     <div class="node-subtitle">{{ nodeDef?.ui?.subtitle || 'Nodo' }}</div>
     
@@ -58,7 +59,7 @@ interface NodeDef {
 
 const props = defineProps<{
   id: string;
-  data: { name: string; parameters: any };
+  data: { name: string; parameters: any; pinData?: any };
   type: string;
   selected?: boolean;
 }>();

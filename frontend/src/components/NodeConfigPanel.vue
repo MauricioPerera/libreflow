@@ -300,6 +300,17 @@
         </div>
       </div>
 
+      <!-- Pin de datos: fija la salida del nodo para no re-ejecutarlo en pruebas manuales -->
+      <div v-if="isPinned || result?.output" class="results-section" style="margin-bottom: 12px;">
+        <div v-if="isPinned" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <span style="font-size:13px;">📌 Salida fijada <span style="color: var(--text-secondary); font-size:12px;">(no se re-ejecuta en pruebas)</span></span>
+          <button @click="emit('set-pin', null)" class="btn btn-secondary" style="padding:4px 10px; font-size:12px;">Quitar fijado</button>
+        </div>
+        <button v-else-if="result?.output" @click="emit('set-pin', result.output)" class="btn btn-secondary" style="padding:4px 10px; font-size:12px;" title="Usar esta salida en futuras ejecuciones de prueba sin re-ejecutar el nodo">
+          📌 Fijar esta salida
+        </button>
+      </div>
+
       <!-- Results / Logs from Execution -->
       <div v-if="result" class="results-section">
         <h4 class="config-label" style="margin-bottom: 8px;">Bitácora de Ejecución</h4>
@@ -377,8 +388,12 @@ const emit = defineEmits<{
   (e: 'update-params', params: any): void;
   (e: 'update-name', name: string): void;
   (e: 'open-expression-editor', targetField: string, displayName: string, expression: string): void;
+  (e: 'set-pin', value: any): void; // value = salida a fijar, o null para quitar el pin
   (e: 'close'): void;
 }>();
+
+// ¿El nodo tiene una salida fijada (pin)?
+const isPinned = computed(() => props.node?.data?.pinData !== undefined);
 
 const localParams = ref<Record<string, any>>({ settings: {} });
 const localName = ref<string>('');
