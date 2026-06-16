@@ -1,6 +1,6 @@
 import dns from 'dns/promises';
 import net from 'net';
-import type { Request, Response, NextFunction } from 'express';
+import type { Request, Response as ExpressResponse, NextFunction } from 'express';
 
 const IS_PROD = process.env.NODE_ENV === 'production';
 // In production, private/loopback targets are blocked by default to prevent SSRF.
@@ -26,10 +26,16 @@ export function rateLimit(opts: { windowMs?: number; max?: number } = {}) {
   const windowMs = opts.windowMs ?? 60_000;
   const max = opts.max ?? 300;
   const hits = new Map<string, { count: number; resetAt: number }>();
+  let lastSweep = Date.now();
 
-  return (req: Request, res: Response, next: NextFunction) => {
+  return (req: Request, res: ExpressResponse, next: NextFunction) => {
     const key = req.ip || req.socket.remoteAddress || 'unknown';
     const now = Date.now();
+    // Evict expired windows so the map can't grow unbounded with one-off client IPs.
+    if (now - lastSweep > windowMs) {
+      for (const [k, v] of hits) if (now > v.resetAt) hits.delete(k);
+      lastSweep = now;
+    }
     const entry = hits.get(key);
     if (!entry || now > entry.resetAt) {
       hits.set(key, { count: 1, resetAt: now + windowMs });
@@ -114,4 +120,33 @@ export async function assertSafeUrl(raw: string): Promise<string> {
     }
   }
   return u.toString();
+}
+
+/**
+ * SSRF-safe fetch: validates the URL AND every redirect hop with `assertSafeUrl`.
+ * `assertSafeUrl` only checks the initial URL, so a public host could 30x-redirect to a
+ * private/metadata address (169.254.169.254, 127.0.0.1, …). This follows redirects manually
+ * (`redirect: 'manual'`), re-validating each `Location` and bounding the hop count.
+ *
+ * Note: this does not defend against DNS-rebinding TOCTOU (the validated IP isn't pinned to
+ * the socket); that needs a custom agent and is out of scope here.
+ */
+export async function safeFetch(
+  url: string,
+  init: RequestInit = {},
+  opts: { maxRedirects?: number } = {}
+): Promise<Response> {
+  const maxRedirects = opts.maxRedirects ?? 5;
+  let current = await assertSafeUrl(url);
+  for (let i = 0; ; i++) {
+    const res = await fetch(current, { ...init, redirect: 'manual' });
+    const location = res.headers.get('location');
+    if (res.status >= 300 && res.status < 400 && location) {
+      if (i >= maxRedirects) throw new Error(`Too many redirects (>${maxRedirects}) for ${url}`);
+      try { await res.arrayBuffer(); } catch { /* free the socket */ }
+      current = await assertSafeUrl(new URL(location, current).toString());
+      continue;
+    }
+    return res;
+  }
 }

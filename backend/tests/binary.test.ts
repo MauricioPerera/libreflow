@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import { initDatabase, getBinary } from '../src/db.js';
-import { isBinaryRef, storeBinary, MAX_BINARY_BYTES } from '../src/binary.js';
+import { isBinaryRef, storeBinary, MAX_BINARY_BYTES, readResponseCapped } from '../src/binary.js';
 import { WorkflowEngine } from '../src/engine.js';
 
 // Bytes binarios reales (cabecera PNG + bytes no-UTF8) para probar fidelidad.
@@ -55,6 +55,33 @@ describe('Binary store', () => {
   it('storeBinary rechaza por encima del tope', async () => {
     const tooBig = Buffer.alloc(MAX_BINARY_BYTES + 1);
     await expect(storeBinary(tooBig)).rejects.toThrow(/tope/i);
+  });
+});
+
+describe('readResponseCapped', () => {
+  // Stub mínimo de Response: content-length + un body con getReader() que emite chunks.
+  const makeRes = (chunks: Buffer[], contentLength?: number) => ({
+    headers: { get: (n: string) => (n.toLowerCase() === 'content-length' && contentLength != null ? String(contentLength) : null) },
+    body: {
+      getReader() {
+        let i = 0;
+        return { read: async () => (i < chunks.length ? { value: new Uint8Array(chunks[i++]), done: false } : { value: undefined, done: true }), cancel: async () => {} };
+      },
+    },
+  });
+
+  it('lee el cuerpo completo por debajo del tope', async () => {
+    const buf = await readResponseCapped(makeRes([Buffer.from('hola '), Buffer.from('mundo')]) as any, 100);
+    expect(buf.toString()).toBe('hola mundo');
+  });
+
+  it('rechaza por Content-Length por encima del tope (sin leer el cuerpo)', async () => {
+    await expect(readResponseCapped(makeRes([], 1000) as any, 100)).rejects.toThrow(/supera el tope/i);
+  });
+
+  it('rechaza si el stream supera el tope aunque mienta el Content-Length', async () => {
+    const chunks = [Buffer.alloc(80), Buffer.alloc(80)]; // 160 > 100
+    await expect(readResponseCapped(makeRes(chunks) as any, 100)).rejects.toThrow(/supera el tope/i);
   });
 });
 

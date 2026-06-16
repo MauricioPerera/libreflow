@@ -43,6 +43,33 @@ export async function storeBinary(
   };
 }
 
+/**
+ * Lee el cuerpo de una respuesta a un Buffer SIN bufferizar más de `maxBytes`. Evita el OOM
+ * de `response.arrayBuffer()/text()` (que cargan todo en memoria) si un endpoint envía —o
+ * miente sobre— una respuesta enorme. Pre-chequea Content-Length y corta el stream al superar.
+ */
+export async function readResponseCapped(res: { headers: { get(n: string): string | null }; body: any }, maxBytes: number): Promise<Buffer> {
+  const len = res.headers.get('content-length');
+  if (len && Number(len) > maxBytes) {
+    throw new Error(`La respuesta (${len} bytes) supera el tope LF_MAX_BINARY_MB (${maxBytes} bytes).`);
+  }
+  const reader = res.body?.getReader?.();
+  if (!reader) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) {
+      try { await reader.cancel(); } catch { /* */ }
+      throw new Error(`La respuesta supera el tope LF_MAX_BINARY_MB (${maxBytes} bytes).`);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
+
 /** Deriva un nombre de fichero razonable desde una URL (para descargas sin Content-Disposition). */
 export function fileNameFromUrl(url: string): string | undefined {
   try {

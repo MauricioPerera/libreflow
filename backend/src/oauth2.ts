@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { assertSafeUrl } from './security.js';
+import { safeFetch } from './security.js';
 import { saveCredential, getCredentialById } from './db.js';
 
 /**
@@ -60,7 +60,7 @@ async function fetchToken(cred: any): Promise<string> {
 
   const tokenUrl = String(d.tokenUrl || '').trim();
   if (!tokenUrl) throw new Error('La credencial OAuth2 no tiene tokenUrl.');
-  await assertSafeUrl(tokenUrl); // SSRF guard (bloquea IPs privadas en producción).
+  // safeFetch (abajo) valida el tokenUrl y cada salto de redirect.
 
   const body = new URLSearchParams();
   body.set('grant_type', renewGrant);
@@ -91,7 +91,7 @@ async function fetchToken(cred: any): Promise<string> {
 
   let res: Response;
   try {
-    res = await fetch(tokenUrl, { method: 'POST', headers, body: body.toString() });
+    res = await safeFetch(tokenUrl, { method: 'POST', headers, body: body.toString() });
   } catch (err: any) {
     throw new Error(`Error de red pidiendo el token OAuth2: ${err?.message || String(err)}`);
   }
@@ -218,7 +218,7 @@ async function exchangeCodeForToken(cred: any, code: string, codeVerifier: strin
   const d = cred.data || {};
   const tokenUrl = String(d.tokenUrl || '').trim();
   if (!tokenUrl) throw new Error('La credencial OAuth2 no tiene tokenUrl.');
-  await assertSafeUrl(tokenUrl);
+  // safeFetch (abajo) valida el tokenUrl y cada salto de redirect.
 
   const body = new URLSearchParams();
   body.set('grant_type', 'authorization_code');
@@ -241,7 +241,7 @@ async function exchangeCodeForToken(cred: any, code: string, codeVerifier: strin
 
   let res: Response;
   try {
-    res = await fetch(tokenUrl, { method: 'POST', headers, body: body.toString() });
+    res = await safeFetch(tokenUrl, { method: 'POST', headers, body: body.toString() });
   } catch (err: any) {
     throw new Error(`Error de red intercambiando el código OAuth2: ${err?.message || String(err)}`);
   }
