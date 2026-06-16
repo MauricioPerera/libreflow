@@ -49,9 +49,14 @@
             <h2 class="subview-title">Flujos de Trabajo</h2>
             <p class="subview-desc">Crea y administra tus automatizaciones de procesos.</p>
           </div>
-          <button @click="createNewWorkflow" class="btn btn-primary">
-            + Crear Flujo
-          </button>
+          <div style="display: flex; gap: 10px;">
+            <button @click="openBatchValidate" class="btn btn-secondary">
+              🔍 Validar coherencia
+            </button>
+            <button @click="createNewWorkflow" class="btn btn-primary">
+              + Crear Flujo
+            </button>
+          </div>
         </div>
 
         <div class="table-container">
@@ -1092,6 +1097,62 @@
       </div>
     </div>
 
+    <!-- BATCH VALIDATION MODAL -->
+    <div v-if="showBatchValidateModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
+      <div class="modal-content" style="width: 680px; max-width: 95%;">
+        <h3 class="modal-title">🔍 Validar coherencia de flujos</h3>
+        <p class="modal-desc">Valida los flujos guardados en lote. Deja el filtro vacío para validar todos, o escribe un host/cadena (p.ej. <code>api.stripe.com</code>) para validar solo los que lo usan.</p>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <input
+            v-model="batchContains"
+            type="text"
+            placeholder="Filtrar por API/cadena (vacío = todos)"
+            style="flex: 1; padding: 10px 12px; border-radius: 8px;"
+            @keyup.enter="runBatchValidate"
+          />
+          <button @click="runBatchValidate" class="btn btn-primary" :disabled="batchValidating">
+            {{ batchValidating ? 'Validando…' : 'Validar' }}
+          </button>
+        </div>
+
+        <div v-if="batchResult" style="margin-top: 16px;">
+          <p class="modal-desc" style="margin-bottom: 10px;">
+            {{ batchResult.summary.total }} flujo(s) ·
+            <span :style="{ color: batchResult.summary.withErrors ? 'hsl(var(--color-danger))' : 'inherit' }">{{ batchResult.summary.withErrors }} con errores</span> ·
+            {{ batchResult.summary.withWarnings }} con avisos
+          </p>
+          <div style="max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+            <div
+              v-for="wf in batchResult.workflows"
+              :key="wf.id"
+              v-show="wf.issues.length"
+              class="validation-banner"
+              style="position: static; width: auto; transform: none; box-shadow: none;"
+            >
+              <div class="validation-banner-head">
+                <strong style="cursor: pointer;" @click="loadWorkflowForEdit(wf.id); closeAllModals();">
+                  {{ wf.ok ? 'ℹ️' : '⚠️' }} {{ wf.name }}
+                  <span style="font-weight: 400; opacity: 0.7;">({{ wf.errors }}e / {{ wf.warnings }}a)</span>
+                </strong>
+              </div>
+              <ul class="validation-banner-list">
+                <li v-for="(issue, i) in wf.issues" :key="i" :class="['validation-issue', issue.level]">
+                  <span class="validation-dot" :class="issue.level"></span>{{ issue.message }}
+                </li>
+              </ul>
+            </div>
+            <p v-if="batchResult.summary.withErrors === 0 && batchResult.summary.withWarnings === 0" class="empty-table-message">
+              ✓ Todos los flujos validados son coherentes.
+            </p>
+          </div>
+        </div>
+
+        <div class="modal-actions" style="margin-top: 16px;">
+          <button @click="closeAllModals()" class="btn btn-secondary">Cerrar</button>
+        </div>
+      </div>
+    </div>
+
     <!-- AI ERROR CONTEXT MODAL -->
     <div v-if="showAiContextModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
       <div class="modal-content" style="width: 640px; max-width: 95%;">
@@ -1284,7 +1345,39 @@ const closeAllModals = () => {
   showExpressionModal.value = false;
   showMcpServerModal.value = false;
   showAiContextModal.value = false;
+  showBatchValidateModal.value = false;
   expressionTarget.value = null;
+};
+
+// --- Validación en lote (POST /api/workflows/validate-batch) ---
+const showBatchValidateModal = ref(false);
+const batchContains = ref('');
+const batchValidating = ref(false);
+const batchResult = ref<any | null>(null);
+
+const openBatchValidate = () => {
+  batchResult.value = null;
+  batchContains.value = '';
+  showBatchValidateModal.value = true;
+};
+
+const runBatchValidate = async () => {
+  if (batchValidating.value) return;
+  batchValidating.value = true;
+  try {
+    const body = batchContains.value.trim() ? { contains: batchContains.value.trim() } : {};
+    const res = await fetch('/api/workflows/validate-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    batchResult.value = await res.json();
+  } catch (err) {
+    console.error('Error validando en lote:', err);
+    alert('No se pudo validar en lote. Revisa la conexión.');
+  } finally {
+    batchValidating.value = false;
+  }
 };
 
 // --- AI error-context (pre-armed LLM prompt from a failed execution) ---
