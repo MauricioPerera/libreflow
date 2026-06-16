@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancela ejecuciones anteriores del mismo PR/rama si llega un push nuevo.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # Instala los workspaces (backend + frontend) desde el lockfile. Compila los módulos
+      # nativos (isolated-vm, sqlite3) si no hay binario prebuilt para esta versión de Node.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (backend tsc + frontend vue-tsc/vite)
+        run: npm run build
+
+      - name: Test (backend + frontend)
+        run: npm test

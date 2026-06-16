@@ -1,5 +1,7 @@
 # LibreFlow
 
+[![CI](https://github.com/MauricioPerera/libreflow/actions/workflows/ci.yml/badge.svg)](https://github.com/MauricioPerera/libreflow/actions/workflows/ci.yml)
+
 A self-hosted, visual **workflow-automation** tool (an n8n-style engine). Build flows
 on a node canvas, run them manually / on a schedule / via webhook, and expose them as
 MCP tools. Workflows are also a **state engine** (data tables with atomic ops + reactive
