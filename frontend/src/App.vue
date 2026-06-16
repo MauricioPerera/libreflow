@@ -657,27 +657,14 @@
     />
 
     <!-- AI ERROR CONTEXT MODAL -->
-    <div v-if="showAiContextModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
-      <div class="modal-content" style="width: 640px; max-width: 95%;">
-        <h3 class="modal-title">🤖 Contexto del error para la IA</h3>
-        <p class="modal-desc">Instrucción lista para pegar a tu agente/LLM: incluye el flujo, la ejecución y el nodo que falló con su error.</p>
-        <div v-if="aiContextLoading" class="empty-table-message">Generando contexto…</div>
-        <template v-else>
-          <textarea
-            ref="aiContextTextarea"
-            :value="aiContextText"
-            readonly
-            style="width: 100%; min-height: 220px; font-family: var(--font-mono, monospace); font-size: 13px; padding: 12px; border-radius: 8px;"
-          ></textarea>
-        </template>
-        <div class="modal-actions" style="margin-top: 16px;">
-          <button @click="closeAllModals()" class="btn btn-secondary">Cerrar</button>
-          <button @click="copyAiContext" class="btn btn-primary" :disabled="aiContextLoading">
-            {{ aiContextCopied ? '✓ Copiado' : 'Copiar al portapapeles' }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <AiContextModal
+      v-if="showAiContextModal"
+      :loading="aiContextLoading"
+      :text="aiContextText"
+      :copied="aiContextCopied"
+      @copy="copyAiContext"
+      @close="closeAllModals"
+    />
 </template>
 
 <script setup lang="ts">
@@ -698,6 +685,7 @@ import AddRowModal from './components/AddRowModal.vue';
 import DataTableModal from './components/DataTableModal.vue';
 import McpServerModal from './components/McpServerModal.vue';
 import BatchValidateModal from './components/BatchValidateModal.vue';
+import AiContextModal from './components/AiContextModal.vue';
 import McpServersView from './components/McpServersView.vue';
 import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
