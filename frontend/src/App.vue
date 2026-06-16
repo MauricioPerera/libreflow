@@ -43,68 +43,15 @@
     <!-- Main Content Panel -->
     <main class="dashboard-content">
       <!-- WORKFLOWS SUBVIEW -->
-      <div v-if="activeSubView === 'workflows'" class="subview-container">
-        <div class="subview-header">
-          <div>
-            <h2 class="subview-title">Flujos de Trabajo</h2>
-            <p class="subview-desc">Crea y administra tus automatizaciones de procesos.</p>
-          </div>
-          <div style="display: flex; gap: 10px;">
-            <button @click="openBatchValidate" class="btn btn-secondary">
-              🔍 Validar coherencia
-            </button>
-            <button @click="createNewWorkflow" class="btn btn-primary">
-              + Crear Flujo
-            </button>
-          </div>
-        </div>
-
-        <div class="table-container">
-          <table class="dashboard-table">
-            <thead>
-              <tr>
-                <th>Nombre del Flujo</th>
-                <th>Estado</th>
-                <th>Creado el</th>
-                <th>Última Modificación</th>
-                <th style="text-align: right;">Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="flow in savedWorkflowsList" :key="flow.id">
-                <td class="flow-name-cell" @click="loadWorkflowForEdit(flow.id)">
-                  📂 {{ flow.name }}
-                </td>
-                <td>
-                  <span :class="['status-badge', flow.active ? 'success' : 'inactive']">
-                    {{ flow.active ? 'Activo' : 'Inactivo' }}
-                  </span>
-                </td>
-                <td>{{ formatFullDate(flow.created_at) }}</td>
-                <td>{{ formatFullDate(flow.updated_at) }}</td>
-                <td style="text-align: right;">
-                  <div class="table-actions">
-                    <button @click="loadWorkflowForEdit(flow.id)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">
-                      Editar
-                    </button>
-                    <button @click="deleteWorkflowFromDb(flow.id)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px; border-color: hsla(var(--color-danger) / 0.3); color: hsl(var(--color-danger));">
-                      Eliminar
-                    </button>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="!dashboardLoaded">
-                <td colspan="5" class="empty-table-message">Cargando flujos…</td>
-              </tr>
-              <tr v-else-if="savedWorkflowsList.length === 0">
-                <td colspan="5" class="empty-table-message">
-                  No tienes flujos de trabajo guardados. Haz clic en "+ Crear Flujo" para empezar.
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <FlowsView
+        v-if="activeSubView === 'workflows'"
+        :workflows="savedWorkflowsList"
+        :loaded="dashboardLoaded"
+        @validate="openBatchValidate"
+        @create="createNewWorkflow"
+        @edit="loadWorkflowForEdit"
+        @delete="deleteWorkflowFromDb"
+      />
 
       <!-- CREDENTIALS SUBVIEW -->
       <CredentialsView
@@ -117,64 +64,13 @@
       />
 
       <!-- GLOBAL EXECUTIONS SUBVIEW -->
-      <div v-if="activeSubView === 'executions'" class="subview-container">
-        <div class="subview-header">
-          <div>
-            <h2 class="subview-title">Bitácora de Ejecuciones</h2>
-            <p class="subview-desc">Historial completo de ejecuciones de todos tus flujos.</p>
-          </div>
-        </div>
-
-        <div class="table-container">
-          <table class="dashboard-table">
-            <thead>
-              <tr>
-                <th>ID Ejecución</th>
-                <th>Flujo</th>
-                <th>Estado</th>
-                <th>Fecha de Ejecución</th>
-                <th style="text-align: right;">Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="exec in globalExecutionsList" :key="exec.id">
-                <td class="code-font">{{ exec.id }}</td>
-                <td class="flow-name-cell" @click="loadPastExecutionFromDashboard(exec.id, exec.workflow_id)">
-                  📂 {{ exec.workflow_name }}
-                </td>
-                <td>
-                  <span :class="['status-badge', exec.status]">
-                    {{ statusLabel(exec.status) }}
-                  </span>
-                </td>
-                <td>{{ formatFullDate(exec.executed_at) }}</td>
-                <td style="text-align: right; white-space: nowrap;">
-                  <button
-                    v-if="exec.status === 'failed'"
-                    @click="openAiContext(exec.id)"
-                    class="btn btn-secondary"
-                    style="padding: 6px 12px; font-size: 12px; margin-right: 6px;"
-                    title="Copiar contexto del error para dárselo a una IA"
-                  >
-                    🤖 Contexto IA
-                  </button>
-                  <button @click="loadPastExecutionFromDashboard(exec.id, exec.workflow_id)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">
-                    Ver Ejecución
-                  </button>
-                </td>
-              </tr>
-              <tr v-if="!dashboardLoaded">
-                <td colspan="5" class="empty-table-message">Cargando ejecuciones…</td>
-              </tr>
-              <tr v-else-if="globalExecutionsList.length === 0">
-                <td colspan="5" class="empty-table-message">
-                  No hay ejecuciones registradas en el sistema.
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <ExecutionsView
+        v-if="activeSubView === 'executions'"
+        :executions="globalExecutionsList"
+        :loaded="dashboardLoaded"
+        @open="loadPastExecutionFromDashboard"
+        @ai-context="openAiContext"
+      />
 
       <!-- DATA TABLES SUBVIEW -->
       <div v-if="activeSubView === 'datatables'" class="subview-container">
@@ -256,129 +152,26 @@
         </div>
 
         <!-- Tables List -->
-        <div v-else>
-          <div class="subview-header">
-            <div>
-              <h2 class="subview-title">Tablas de Datos (Data Tables)</h2>
-              <p class="subview-desc">Crea y administra tablas estructuradas para almacenar registros de tus automatizaciones.</p>
-            </div>
-            <button @click="openCreateTableModal" class="btn btn-primary">
-              + Crear Tabla
-            </button>
-          </div>
-
-          <div class="table-container">
-            <table class="dashboard-table">
-              <thead>
-                <tr>
-                  <th>Nombre de la Tabla</th>
-                  <th>ID</th>
-                  <th>Columnas</th>
-                  <th>Creada el</th>
-                  <th style="text-align: right;">Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="table in dataTablesList" :key="table.id">
-                  <td class="flow-name-cell" @click="loadTableDetails(table)">
-                    📊 {{ table.name }}
-                  </td>
-                  <td class="code-font">{{ table.id }}</td>
-                  <td>
-                    <span v-for="col in parseJsonColumns(table.columns)" :key="col.name" class="status-badge" style="margin-right: 4px; background: hsla(var(--color-primary) / 0.1); color: hsl(var(--color-primary-text)); padding: 2px 6px; font-size: 12px;">
-                      {{ col.name }} ({{ col.type }})
-                    </span>
-                  </td>
-                  <td>{{ formatFullDate(table.created_at) }}</td>
-                  <td style="text-align: right;">
-                    <div class="table-actions">
-                      <button @click="loadTableDetails(table)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">
-                        Ver Datos
-                      </button>
-                      <button @click="deleteTableFromDb(table.id)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px; border-color: hsla(var(--color-danger) / 0.3); color: hsl(var(--color-danger));">
-                        Eliminar
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-                <tr v-if="!dashboardLoaded">
-                  <td colspan="5" class="empty-table-message">Cargando tablas…</td>
-                </tr>
-                <tr v-else-if="dataTablesList.length === 0">
-                  <td colspan="5" class="empty-table-message">
-                    No tienes tablas de datos creadas. Haz clic en "+ Crear Tabla" para empezar.
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <DataTablesList
+          v-else
+          :tables="dataTablesList"
+          :loaded="dashboardLoaded"
+          @create="openCreateTableModal"
+          @select="loadTableDetails"
+          @delete="deleteTableFromDb"
+        />
       </div>
 
       <!-- MCP SERVERS SUBVIEW -->
-      <div v-if="activeSubView === 'mcpservers'" class="subview-container">
-        <div class="subview-header">
-          <div>
-            <h2 class="subview-title">Servidores MCP</h2>
-            <p class="subview-desc">Publica un grupo concreto de flujos como herramientas MCP en una URL propia, conectable desde clientes como Claude Desktop.</p>
-          </div>
-          <button @click="openCreateMcpServerModal" class="btn btn-primary">
-            + Crear Servidor MCP
-          </button>
-        </div>
-
-        <div class="table-container">
-          <table class="dashboard-table">
-            <thead>
-              <tr>
-                <th>Nombre</th>
-                <th>URL (MCP)</th>
-                <th>Flujos</th>
-                <th>Acceso</th>
-                <th style="text-align: right;">Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="server in mcpServersList" :key="server.id">
-                <td class="flow-name-cell" @click="openEditMcpServerModal(server)">
-                  🔌 {{ server.name }}
-                </td>
-                <td class="code-font" style="font-size: 12px;">
-                  {{ mcpServerUrl(server.id) }}
-                  <button @click="copyMcpText(mcpServerUrl(server.id))" class="btn btn-secondary" style="padding: 2px 6px; font-size: 11px; margin-left: 6px;">Copiar</button>
-                </td>
-                <td>{{ (server.workflow_ids || []).length }}</td>
-                <td>
-                  <span :class="['status-badge', server.require_auth ? 'success' : 'inactive']">
-                    {{ server.require_auth ? 'Token' : 'Público' }}
-                  </span>
-                </td>
-                <td style="text-align: right;">
-                  <div class="table-actions">
-                    <button v-if="server.require_auth" @click="copyMcpText(server.token)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">
-                      Copiar token
-                    </button>
-                    <button @click="openEditMcpServerModal(server)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">
-                      Editar
-                    </button>
-                    <button @click="deleteMcpServerFromDb(server.id)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px; border-color: hsla(var(--color-danger) / 0.3); color: hsl(var(--color-danger));">
-                      Eliminar
-                    </button>
-                  </div>
-                </td>
-              </tr>
-              <tr v-if="!dashboardLoaded">
-                <td colspan="5" class="empty-table-message">Cargando servidores…</td>
-              </tr>
-              <tr v-else-if="mcpServersList.length === 0">
-                <td colspan="5" class="empty-table-message">
-                  No tienes servidores MCP. Haz clic en "+ Crear Servidor MCP" para empezar.
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <McpServersView
+        v-if="activeSubView === 'mcpservers'"
+        :servers="mcpServersList"
+        :loaded="dashboardLoaded"
+        @create="openCreateMcpServerModal"
+        @edit="openEditMcpServerModal"
+        @delete="deleteMcpServerFromDb"
+        @copy="copyMcpText"
+      />
     </main>
   </div>
 
@@ -1137,6 +930,10 @@ import NodeConfigPanel from './components/NodeConfigPanel.vue';
 import ExpressionEditor from './components/ExpressionEditor.vue';
 import CustomNode from './components/CustomNode.vue';
 import CredentialsView from './components/CredentialsView.vue';
+import FlowsView from './components/FlowsView.vue';
+import ExecutionsView from './components/ExecutionsView.vue';
+import DataTablesList from './components/DataTablesList.vue';
+import McpServersView from './components/McpServersView.vue';
 import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
 // Screen Routing states
@@ -2103,8 +1900,6 @@ const fetchMcpServers = async () => {
     console.error('Error fetching MCP servers:', err);
   }
 };
-
-const mcpServerUrl = (id: string) => `${window.location.origin}/mcp/${id}`;
 
 const copyMcpText = async (text: string) => {
   try {

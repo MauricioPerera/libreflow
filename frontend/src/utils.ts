@@ -17,6 +17,11 @@ export function statusLabel(status: string): string {
   } as Record<string, string>)[status] || status;
 }
 
+/** URL pública del servidor MCP nombrado, derivada del origen actual del navegador. */
+export function mcpServerUrl(id: string): string {
+  return `${window.location.origin}/mcp/${id}`;
+}
+
 /** Etiqueta legible para el tipo de una credencial. */
 export function credentialTypeLabel(type: string): string {
   return ({
