@@ -4,7 +4,7 @@ import { ImapFlow } from 'imapflow';
 import { getWorkflowById, getCredentialById } from './db.js';
 import { executeWorkflowAndRecord, execStack } from './executor.js';
 import { triggerContext } from './dataTableEvents.js';
-import { assertSafeUrl } from './security.js';
+import { assertSafeUrl, safeFetch } from './security.js';
 import { resolveCredentialAuth } from './registry.js';
 
 /**
@@ -106,10 +106,10 @@ const connectSse: ConnectFn = async (cfg, onMessage, onClosed) => {
   if (!cfg.url) throw new Error('SSE trigger requiere url');
   const { headers, query } = await resolveCredentialAuth(cfg.credentialId);
   const url = appendQuery(cfg.url, query);
-  await guardUrl(url);
 
   const controller = new AbortController();
-  const res = await fetch(url, {
+  // safeFetch valida la URL y cada salto de redirect (SSRF); devuelve el stream final.
+  const res = await safeFetch(url, {
     headers: { Accept: 'text/event-stream', ...headers },
     signal: controller.signal,
   });
