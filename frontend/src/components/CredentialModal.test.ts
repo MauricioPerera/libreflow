@@ -9,6 +9,7 @@ function installFetch(creds: Record<string, any> = {}) {
   (globalThis as any).fetch = vi.fn(async (url: string, opts: any = {}) => {
     if (url === '/api/oauth/redirect-uri') return { ok: true, json: async () => ({ redirectUri: 'http://app/oauth/callback' }) };
     if (url === '/api/credentials' && opts.method === 'POST') { posted.push(JSON.parse(opts.body)); return { ok: true, json: async () => ({ success: true }) }; }
+    if (url.includes('/oauth/authorize') && opts.method === 'POST') return { ok: true, json: async () => ({ url: 'http://provider/auth' }) };
     if (url.startsWith('/api/credentials/') && (!opts.method || opts.method === 'GET')) {
       const id = url.split('/').pop()!;
       return { ok: true, json: async () => creds[id] };
@@ -91,6 +92,25 @@ describe('CredentialModal', () => {
     await flushPromises();
     expect(w.text()).toContain('Editar Credencial');
     expect((w.find('input').element as HTMLInputElement).value).toBe('Slack');
+  });
+
+  it('OAuth postMessage: ignora origen ajeno, acepta el del callback', async () => {
+    installFetch({ ac: { id: 'ac', name: 'AC', type: 'oauth2', connected: false, data: { grantType: 'authorization_code', authUrl: 'https://a/auth', tokenUrl: 'https://a/token', clientId: 'cid' } } });
+    (window as any).open = vi.fn(() => ({}));
+    const w = mountModal({ editId: 'ac' });
+    await flushPromises();
+    await w.findAll('button').find((b) => b.text().includes('Conectar'))!.trigger('click');
+    await flushPromises();
+
+    // Mensaje de un origen ajeno -> ignorado (anti-spoofing).
+    window.dispatchEvent(new MessageEvent('message', { data: { source: 'libreflow-oauth', ok: true }, origin: 'http://evil.example' }));
+    await flushPromises();
+    expect(w.text()).not.toContain('Conectada');
+
+    // Mensaje del origen del callback (redirect URI = http://app) -> aceptado.
+    window.dispatchEvent(new MessageEvent('message', { data: { source: 'libreflow-oauth', ok: true }, origin: 'http://app' }));
+    await flushPromises();
+    expect(w.text()).toContain('Conectada');
   });
 
   it('emite close al cancelar', async () => {

@@ -134,7 +134,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 
 const props = defineProps<{
   // id de la credencial a editar, o null para crear una nueva.
@@ -192,6 +192,19 @@ const fetchOAuthRedirectUri = async () => {
   } catch { /* ignore */ }
 };
 
+// Origen esperado del mensaje del callback = origen del redirect URI (en dev el backend sirve
+// el callback en otro puerto que la app), con fallback al origen actual.
+const expectedOAuthOrigin = (): string => {
+  try { return oauthRedirectUri.value ? new URL(oauthRedirectUri.value).origin : window.location.origin; }
+  catch { return window.location.origin; }
+};
+
+// Listener activo del popup OAuth (lo limpiamos al recibir respuesta o al desmontar el modal).
+let oauthListener: ((e: MessageEvent) => void) | null = null;
+const clearOAuthListener = () => {
+  if (oauthListener) { window.removeEventListener('message', oauthListener); oauthListener = null; }
+};
+
 // Inicia el flujo interactivo: abre un popup al proveedor y espera el postMessage del callback.
 const connectOAuth = () => {
   if (!editingCredentialId.value) return;
@@ -199,9 +212,11 @@ const connectOAuth = () => {
   oauthConnecting.value = true;
   const id = editingCredentialId.value;
 
+  clearOAuthListener(); // evita acumular listeners en reintentos
   const onMessage = (e: MessageEvent) => {
+    if (e.origin !== expectedOAuthOrigin()) return; // solo nuestro propio callback
     if (!e.data || e.data.source !== 'libreflow-oauth') return;
-    window.removeEventListener('message', onMessage);
+    clearOAuthListener();
     oauthConnecting.value = false;
     if (e.data.ok) {
       oauthConnected.value = true;
@@ -209,6 +224,7 @@ const connectOAuth = () => {
       oauthConnectError.value = e.data.detail || 'Error de conexión';
     }
   };
+  oauthListener = onMessage;
   window.addEventListener('message', onMessage);
 
   (async () => {
@@ -219,7 +235,7 @@ const connectOAuth = () => {
       const popup = window.open(url, 'libreflow-oauth', 'width=620,height=720');
       if (!popup) throw new Error('El navegador bloqueó el popup. Permítelo y reintenta.');
     } catch (err: any) {
-      window.removeEventListener('message', onMessage);
+      clearOAuthListener();
       oauthConnecting.value = false;
       oauthConnectError.value = err.message;
     }
@@ -344,4 +360,7 @@ onMounted(() => {
   if (props.editId) initEdit(props.editId);
   else initCreate();
 });
+
+// Limpia el listener del popup OAuth si el modal se cierra antes de que el popup responda.
+onUnmounted(clearOAuthListener);
 </script>
