@@ -39,6 +39,7 @@ import { NodeRegistry } from './registry.js';
 import mcpRouter, { publicMcpRouter } from './mcp.js';
 import { requireAuth, verifyWebhookSignature } from './auth.js';
 import { rateLimit } from './security.js';
+import { buildAuthorizationUrl, handleOAuthCallback } from './oauth2.js';
 import crypto from 'crypto';
 
 const app = express();
@@ -348,7 +349,12 @@ app.get('/api/credentials/:id', async (req, res) => {
       return res.status(404).json({ error: 'Credential not found' });
     }
     // Never expose decrypted secret material over the API — metadata only.
+    // For oauth2 we surface a derived `connected` flag (has a usable token?) without
+    // leaking the token itself, so the UI can show connection status.
     const { data, ...meta } = credential;
+    if (credential.type === 'oauth2') {
+      (meta as any).connected = !!(data && data.accessToken);
+    }
     return res.json(meta);
   } catch (err: any) {
     return serverError(res, err);
@@ -360,6 +366,16 @@ app.post('/api/credentials', async (req, res) => {
     const { id, name, type, data } = req.body;
     if (!id || !name || !type || !data) {
       return res.status(400).json({ error: 'id, name, type, and data are required' });
+    }
+    // OAuth2: al editar una credencial ya conectada, el formulario no reenvía los tokens
+    // (la GET no los expone). Conserva accessToken/refreshToken/expiresAt para no desconectarla.
+    if (type === 'oauth2') {
+      const existing = await getCredentialById(id);
+      if (existing?.data) {
+        for (const f of ['accessToken', 'refreshToken', 'expiresAt']) {
+          if (existing.data[f] !== undefined && data[f] === undefined) data[f] = existing.data[f];
+        }
+      }
     }
     await saveCredential(id, name, type, data);
     return res.json({ success: true, message: 'Credential saved successfully' });
@@ -374,6 +390,33 @@ app.delete('/api/credentials/:id', async (req, res) => {
     return res.json({ success: true, message: 'Credential deleted successfully' });
   } catch (err: any) {
     return serverError(res, err);
+  }
+});
+
+// URL pública base de esta instancia (para construir el redirect_uri de OAuth). Si no se
+// configura LF_PUBLIC_URL, cae a localhost:PORT (solo válido con proveedores que lo permitan).
+function publicBaseUrl(): string {
+  const raw = process.env.LF_PUBLIC_URL || `http://localhost:${process.env.PORT || 3000}`;
+  return raw.replace(/\/+$/, '');
+}
+const oauthRedirectUri = () => `${publicBaseUrl()}/oauth/callback`;
+
+// El redirect_uri que el usuario debe registrar en la app OAuth del proveedor.
+app.get('/api/oauth/redirect-uri', (_req, res) => {
+  return res.json({ redirectUri: oauthRedirectUri() });
+});
+
+// Inicia el flujo interactivo: devuelve la URL del proveedor a la que abrir el navegador.
+app.post('/api/credentials/:id/oauth/authorize', async (req, res) => {
+  try {
+    const cred = await getCredentialById(req.params.id);
+    if (!cred || cred.type !== 'oauth2') {
+      return res.status(404).json({ error: 'OAuth2 credential not found' });
+    }
+    const url = buildAuthorizationUrl(cred, oauthRedirectUri());
+    return res.json({ url });
+  } catch (err: any) {
+    return res.status(400).json({ error: err.message });
   }
 });
 
@@ -542,6 +585,40 @@ app.post('/hooks/resume/:token', async (req, res) => {
     return res.json({ success: report.success, suspended: false, nodeResults: report.nodeResults });
   } catch (err: any) {
     return serverError(res, err);
+  }
+});
+
+// OAuth2 CALLBACK (público — lo invoca el proveedor). Valida el `state`, intercambia el
+// código por tokens y devuelve una página que avisa al popup y se cierra. Sin auth: la
+// seguridad la dan el `state` infalsificable de un solo uso + PKCE.
+function oauthResultPage(ok: boolean, detail: string): string {
+  const esc = (s: string) => String(s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string
+  ));
+  const payload = JSON.stringify({ source: 'libreflow-oauth', ok, detail });
+  const msg = ok
+    ? `✅ Credencial conectada (${esc(detail)}). Puedes cerrar esta ventana.`
+    : `❌ No se pudo conectar: ${esc(detail)}`;
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>LibreFlow OAuth</title></head>
+<body style="font-family:system-ui,sans-serif;padding:2rem;color:#222">
+<p>${msg}</p>
+<script>
+  try { if (window.opener) window.opener.postMessage(${payload}, '*'); } catch (e) {}
+  setTimeout(function(){ window.close(); }, ${ok ? 800 : 4000});
+</script>
+</body></html>`;
+}
+
+app.get('/oauth/callback', async (req, res) => {
+  const { code, state, error, error_description } = req.query as Record<string, string>;
+  res.set('Content-Type', 'text/html; charset=utf-8');
+  if (error) return res.send(oauthResultPage(false, error_description || error));
+  if (!code || !state) return res.send(oauthResultPage(false, 'Faltan parámetros code/state'));
+  try {
+    const r = await handleOAuthCallback(String(state), String(code));
+    return res.send(oauthResultPage(true, r.credentialName));
+  } catch (err: any) {
+    return res.send(oauthResultPage(false, err.message || 'Error desconocido'));
   }
 });
 

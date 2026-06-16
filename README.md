@@ -104,7 +104,10 @@ Workflow shape: `nodes[] = {id,type,name,parameters}`, `connections[] =
 - Outbound requests (httpRequest / MCP / aiAgent LLM) are SSRF-guarded; private IPs blocked
   in production.
 - Credentials are encrypted at rest (AES-256-GCM); the API never returns decrypted secrets.
-  Types: `basicAuth`, `apiKey`, and `oauth2` (server-to-server: `client_credentials` /
-  `refresh_token`, with automatic token fetch/refresh and an encrypted token cache).
+  Types: `basicAuth`, `apiKey`, and `oauth2` — server-to-server (`client_credentials` /
+  `refresh_token`) **and interactive `authorization_code` + PKCE** (browser consent via a
+  popup → `/oauth/callback`), all with automatic token fetch/refresh and an encrypted token
+  cache. Interactive flow needs `LF_PUBLIC_URL` set and the redirect URI registered at the
+  provider.
 - Named MCP servers use a per-server bearer token (constant-time compared); a **public**
   (no-token) server may not expose the destructive `libreflow_*` system tools.

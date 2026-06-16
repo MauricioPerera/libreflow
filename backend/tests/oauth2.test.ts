@@ -16,8 +16,9 @@ vi.mock('../src/db.js', () => ({
   saveCredential,
 }));
 
+import crypto from 'node:crypto';
 import { resolveCredentialAuth } from '../src/registry.js';
-import { clearOAuth2Cache } from '../src/oauth2.js';
+import { clearOAuth2Cache, buildAuthorizationUrl, handleOAuthCallback, clearPendingAuth } from '../src/oauth2.js';
 
 // Mock de fetch configurable por test.
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -31,6 +32,7 @@ function mockTokenResponse(body: any, ok = true, status = 200) {
 
 beforeEach(() => {
   clearOAuth2Cache();
+  clearPendingAuth();
   for (const k of Object.keys(creds)) delete creds[k];
   saveCredential.mockClear();
 });
@@ -156,5 +158,107 @@ describe('OAuth2 credential (resolveCredentialAuth)', () => {
     mockTokenResponse({ access_token: 'x' });
 
     await expect(resolveCredentialAuth('bad')).rejects.toThrow(/refresh_token/i);
+  });
+});
+
+describe('OAuth2 authorization_code (flujo interactivo + PKCE)', () => {
+  const acCred = () => ({
+    id: 'ac', name: 'AC', type: 'oauth2', data: {
+      grantType: 'authorization_code',
+      authUrl: 'https://accounts.example.com/auth',
+      tokenUrl: 'https://auth.example.com/token',
+      clientId: 'cid', clientSecret: 'csec', scope: 'email profile',
+      usePkce: true, offlineAccess: true,
+    },
+  });
+
+  it('buildAuthorizationUrl arma todos los parámetros (PKCE S256 + offline)', () => {
+    const url = new URL(buildAuthorizationUrl(acCred(), 'https://app.local/oauth/callback'));
+    expect(url.origin + url.pathname).toBe('https://accounts.example.com/auth');
+    expect(url.searchParams.get('response_type')).toBe('code');
+    expect(url.searchParams.get('client_id')).toBe('cid');
+    expect(url.searchParams.get('redirect_uri')).toBe('https://app.local/oauth/callback');
+    expect(url.searchParams.get('scope')).toBe('email profile');
+    expect(url.searchParams.get('state')).toBeTruthy();
+    expect(url.searchParams.get('code_challenge')).toBeTruthy();
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(url.searchParams.get('access_type')).toBe('offline');
+  });
+
+  it('sin PKCE no incluye code_challenge', () => {
+    const cred = acCred(); cred.data.usePkce = false;
+    const url = new URL(buildAuthorizationUrl(cred, 'https://app.local/oauth/callback'));
+    expect(url.searchParams.get('code_challenge')).toBeNull();
+  });
+
+  it('handleOAuthCallback intercambia el código, verifica PKCE y persiste tokens', async () => {
+    creds['ac'] = acCred();
+    const url = new URL(buildAuthorizationUrl(creds['ac'], 'https://app.local/oauth/callback'));
+    const state = url.searchParams.get('state')!;
+    const challenge = url.searchParams.get('code_challenge')!;
+    mockTokenResponse({ access_token: 'AT', refresh_token: 'RT', expires_in: 3600 });
+
+    const r = await handleOAuthCallback(state, 'AUTH_CODE');
+    expect(r.credentialId).toBe('ac');
+
+    // El cuerpo enviado al token endpoint usa grant_type=authorization_code + el code.
+    const params = new URLSearchParams(fetchMock.mock.calls[0][1].body);
+    expect(params.get('grant_type')).toBe('authorization_code');
+    expect(params.get('code')).toBe('AUTH_CODE');
+    expect(params.get('redirect_uri')).toBe('https://app.local/oauth/callback');
+
+    // El code_verifier enviado corresponde al code_challenge publicado (PKCE correcto).
+    const verifier = params.get('code_verifier')!;
+    const recomputed = crypto.createHash('sha256').update(verifier).digest('base64url');
+    expect(recomputed).toBe(challenge);
+
+    // Tokens persistidos.
+    const savedData = saveCredential.mock.calls.at(-1)![3];
+    expect(savedData.accessToken).toBe('AT');
+    expect(savedData.refreshToken).toBe('RT');
+  });
+
+  it('state es de un solo uso', async () => {
+    creds['ac'] = acCred();
+    const url = new URL(buildAuthorizationUrl(creds['ac'], 'https://app.local/oauth/callback'));
+    const state = url.searchParams.get('state')!;
+    mockTokenResponse({ access_token: 'AT', expires_in: 3600 });
+
+    await handleOAuthCallback(state, 'CODE1');
+    await expect(handleOAuthCallback(state, 'CODE2')).rejects.toThrow(/state/i);
+  });
+
+  it('state desconocido -> lanza', async () => {
+    mockTokenResponse({ access_token: 'AT' });
+    await expect(handleOAuthCallback('inexistente', 'CODE')).rejects.toThrow(/state/i);
+  });
+
+  it('renueva un credential authorization_code vía refresh_token', async () => {
+    creds['ac'] = {
+      id: 'ac', name: 'AC', type: 'oauth2', data: {
+        grantType: 'authorization_code', tokenUrl: 'https://auth.example.com/token',
+        clientId: 'cid', clientSecret: 'csec', refreshToken: 'STORED_RT',
+        accessToken: 'OLD', expiresAt: Date.now() - 1000, // expirado
+      },
+    };
+    mockTokenResponse({ access_token: 'RENEWED', expires_in: 3600 });
+
+    const { headers } = await resolveCredentialAuth('ac');
+    expect(headers['Authorization']).toBe('Bearer RENEWED');
+    const params = new URLSearchParams(fetchMock.mock.calls[0][1].body);
+    expect(params.get('grant_type')).toBe('refresh_token');
+    expect(params.get('refresh_token')).toBe('STORED_RT');
+  });
+
+  it('authorization_code expirado sin refresh token -> pide reconectar', async () => {
+    creds['ac'] = {
+      id: 'ac', name: 'AC', type: 'oauth2', data: {
+        grantType: 'authorization_code', tokenUrl: 'https://auth.example.com/token',
+        clientId: 'cid', clientSecret: 'csec',
+        accessToken: 'OLD', expiresAt: Date.now() - 1000,
+      },
+    };
+    mockTokenResponse({ access_token: 'x' });
+    await expect(resolveCredentialAuth('ac')).rejects.toThrow(/conect/i);
   });
 });
