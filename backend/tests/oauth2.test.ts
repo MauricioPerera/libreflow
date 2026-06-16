@@ -25,6 +25,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 function mockTokenResponse(body: any, ok = true, status = 200) {
   fetchMock = vi.fn(async () => ({
     ok, status,
+    headers: { get: () => null }, // safeFetch comprueba 'location'; sin redirect
     text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
   }));
   (globalThis as any).fetch = fetchMock;

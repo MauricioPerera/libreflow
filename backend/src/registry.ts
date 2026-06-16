@@ -1,12 +1,12 @@
 import { LibreFlowNodeDefinition } from './sdk.js';
 import { WorkflowSuspendError } from './engine.js';
 import { getCredentialById, getWorkflowById, getBinary } from './db.js';
-import { storeBinary, isBinaryRef, fileNameFromUrl } from './binary.js';
+import { storeBinary, isBinaryRef, fileNameFromUrl, readResponseCapped, MAX_BINARY_BYTES } from './binary.js';
 import { parseFileBuffer, serializeToFile, detectFormat, parsePdfBuffer, FileFormat } from './fileParse.js';
 import { compareValues, filterItems, summarize, sortItems, limitItems, uniqueItems, Aggregation } from './collections.js';
 import ivm from 'isolated-vm';
 import { executeMcpToolCall } from './mcp.js';
-import { assertSafeUrl, isUnsafeKey } from './security.js';
+import { assertSafeUrl, safeFetch, isUnsafeKey } from './security.js';
 import { getOAuth2AccessToken } from './oauth2.js';
 
 /**
@@ -366,9 +366,6 @@ const httpRequestNode: LibreFlowNodeDefinition = {
       throw new Error('HTTP Request Node error: URL is required');
     }
 
-    // SSRF guard: validate the target before making the request.
-    await assertSafeUrl(url);
-
     const headerObj: Record<string, string> = {};
     for (const h of headers) {
       if (h && h.key) {
@@ -410,22 +407,25 @@ const httpRequestNode: LibreFlowNodeDefinition = {
       }
     }
 
-    const response = await fetch(requestUrl, fetchOptions);
+    // safeFetch valida la URL y CADA salto de redirect (SSRF), con redirects acotados.
+    const response = await safeFetch(requestUrl, fetchOptions);
 
     const resHeaders: Record<string, string> = {};
     response.headers.forEach((value, key) => {
       resHeaders[key] = value;
     });
 
+    // Lee el cuerpo con tope de memoria (evita OOM si el endpoint envía/miente sobre algo enorme).
+    const buf = await readResponseCapped(response, MAX_BINARY_BYTES);
+
     let responseBody: any;
     if (responseFormat === 'binary') {
       // Descarga: guarda los bytes en el store y devuelve una referencia ligera.
-      const buf = Buffer.from(await response.arrayBuffer());
       const fileName = fileNameFromUrl(requestUrl);
       const mimeType = resHeaders['content-type']?.split(';')[0]?.trim();
       responseBody = await storeBinary(buf, { executionId, fileName, mimeType });
     } else {
-      const text = await response.text();
+      const text = buf.toString('utf-8');
       if (responseFormat === 'text') {
         responseBody = text;
       } else if (responseFormat === 'json') {

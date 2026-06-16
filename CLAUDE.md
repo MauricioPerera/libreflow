@@ -124,7 +124,10 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   only-defined-fields + global rate limit) serve an auto-generated HTML form and run the flow
   on submit; a `respond` node gives a custom thank-you/redirect, else a default completion page.
 - **auth.ts / security.ts** — API key + webhook HMAC; `constantTimeEqual` (per-MCP-server token);
-  SSRF guard (`assertSafeUrl`), `isUnsafeKey`, `rateLimit`, `cronTooFrequent`.
+  SSRF guard (`assertSafeUrl` + `safeFetch`, which re-validates every redirect hop),
+  `isUnsafeKey`, `rateLimit` (evicts expired windows), `cronTooFrequent`. httpRequest/oauth2
+  use `safeFetch`; httpRequest reads the body capped (`readResponseCapped`, `binary.ts`) to
+  avoid OOM on huge/lying responses.
 - **mcp.ts** — MCP server **and** client, via the official SDK (`@modelcontextprotocol/sdk`).
   `dispatchMcpRpc(body, scope)` is the single JSON-RPC source of truth (scope = which
   workflows + whether the `libreflow_*` system tools are exposed). Transports: **Streamable
