@@ -12,10 +12,12 @@ npm run dev:backend    # backend only (tsx watch)
 npm run dev:frontend   # frontend only (vite)
 npm run build          # backend tsc + frontend vue-tsc && vite build
 npm test               # backend vitest + frontend vitest (test:backend / test:frontend for one)
+docker compose up -d --build   # single-container deploy (backend serves the built frontend)
 ```
 
-Verify changes with `npm test` (backend) and `npm run build` (both). To exercise the
-running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
+Verify changes with `npm test` (backend + frontend) and `npm run build` (both). CI
+(`.github/workflows/ci.yml`) runs the suite + a Docker image build on every push/PR. To
+exercise the running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
 
 ## Architecture
 
@@ -32,7 +34,10 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   by `POST /api/workflows/run`) the engine uses it instead of executing the node — iterate
   downstream without re-calling expensive/external nodes. Ignored in production (triggered runs
   don't set the flag). Honors if/switch branch routing from the pinned output; result flagged
-  `pinned: true`.
+  `pinned: true`. **Re-run from a node**: `descendantsOf` + `buildRerunResume` build a
+  `ResumeState` from a prior run's `nodeResults` minus the target node and its descendants, so
+  the replay reuses cached upstream outputs and only re-runs that node downward (same mechanism
+  as suspend/resume; `POST /api/workflows/run` accepts `{ rerunFrom, priorResults }`).
 - **nodes.ts** — `executeNode` + expression resolution `{{ $node.Name.output.path }}`.
   Ephemeral params (loop state, trigger payload) are passed as `paramOverrides` — the engine
   NEVER mutates the shared node object (keeps re-runs deterministic). Prototype-pollution
@@ -63,7 +68,8 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   Serializes concurrent runs of the same workflow id (per-id promise chain), and exports an
   `execStack` (`AsyncLocalStorage`) re-entrancy guard that aborts a workflow trying to run
   itself (e.g. an agent whose toolset includes its own flow) instead of deadlocking.
-- **db.ts** — SQLite access. `PRAGMA foreign_keys = ON`, `busy_timeout`, `journal_mode = WAL`;
+- **db.ts** — SQLite access (path from `LF_DB_PATH`, default `./database.sqlite`).
+  `PRAGMA foreign_keys = ON`, `busy_timeout`, `journal_mode = WAL`;
   `saveWorkflow` + version are atomic (BEGIN/COMMIT); indexes on hot columns; idempotent column
   migrations. Tables: workflows, executions, credentials, workflow_versions, data_tables,
   data_table_rows, **mcp_servers**, **binaries**. **Binary store** (`binary.ts` + db helpers
@@ -97,7 +103,10 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   `serverError`. Mounts the public named-MCP-server router at `/mcp` (outside `/api` auth).
   Webhooks (`/hooks/:id`) honor the trigger's `responseMode`: `onReceived` (immediate ack +
   background run, the legacy default) vs synchronous `lastNode`/`respondNode` (await the run,
-  bounded by `LF_WEBHOOK_SYNC_TIMEOUT_MS`, then emit `report.httpResponse`).
+  bounded by `LF_WEBHOOK_SYNC_TIMEOUT_MS`, then emit `report.httpResponse`). Export/import a flow
+  as portable JSON (no id/secrets): `GET /api/workflows/:id/export` + `POST /api/workflows/import`
+  (creates a new flow). In single-container deploys serves the built frontend from `LF_STATIC_DIR`
+  with an SPA fallback that excludes the `/api`,`/hooks`,`/mcp`,`/oauth`,`/form` prefixes.
 - **flowValidate.ts** — `validateWorkflow` (pure, uses registry): structural coherence checks —
   unknown node types, dangling connections, invalid output handles, duplicate names, and
   **hanging `{{ $node.X.output }}` expressions** (catches the rename-breakage). Returns
@@ -138,27 +147,33 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   compact JSON + `structuredContent` + annotations, with default row limits (agent-first).
 
 ### Frontend (`frontend/src/`)
-- **App.vue** — the whole UI (dashboard + node-canvas editor). Dashboard subviews: Flujos,
-  Ejecuciones, Credenciales, Tablas de Datos, **Servidores MCP** (CRUD a named server's
-  workflow group + token + URL). Calls the backend via `/api` (Vite proxy). `apiGetJson`
-  checks `res.ok`; `applyExecutionResults` is the shared node/edge status-styling helper.
-  Unsaved-changes are tracked via `isDirty` (+ beforeunload). The Ejecuciones view shows a
-  status badge per run and a "🤖 Contexto IA" button on failed runs (fetches
-  `/api/executions/:id/llm-context` into a copy-to-clipboard modal). On save, the editor
-  paints the coherence `validation` returned by the API as a floating banner over the canvas
-  (errors/warnings; clicking an issue selects the offending node via `focusIssueNode`). The
-  Flujos view has a "🔍 Validar coherencia" action (modal) that runs the batch validator with
-  an optional API/substring filter and lists per-flow issues (click a flow → open it).
-- **components/** — `CustomNode`, `NodeConfigPanel` (param form, inline JSON/cron validation),
-  `ExpressionEditor`, `JsonTreeItem`.
-- **utils.ts** — pure helpers extracted from `App.vue` (no reactive state): `statusLabel`,
-  `formatFullDate`, `setNestedValue` (prototype-pollution-guarded), `parseJsonColumns`,
-  `coerceRowByColumns`. Unit-tested (`utils.test.ts`) — the start of breaking up the monolith.
+- **App.vue** — the shell/orchestrator: VueFlow node-canvas editor + dashboard, owning the
+  reactive state, fetchers and CRUD; the dashboard subviews and modals are now **extracted
+  components** (App.vue went 2623→~1800 LOC). Backend via `/api` (Vite proxy in dev;
+  same-origin in the single-container prod build). `apiGetJson` (used by all read fetchers)
+  checks `res.ok`; `applyExecutionResults` styles node/edge status. Unsaved-changes via
+  `isDirty` — set on connect/add/param-edit **and** node move (`@node-drag-stop`) / delete
+  (`@nodes/edges-change` `remove`), guarded by `applyingCanvas` so programmatic loads don't
+  trip it. On save, the coherence `validation` paints as a floating banner (click an issue →
+  `focusIssueNode`). Wires the **pin** (`set-pin`) and **re-run** (`rerun`) actions from
+  `NodeConfigPanel`, and workflow **export/import** (download blob / file-picker → POST).
+- **components/** — extracted, presentational (props in / emits out) unless noted:
+  - Dashboard subviews: `FlowsView`, `CredentialsView`, `ExecutionsView`, `DataTablesList`,
+    `DataTableDetail` (controlled inline-edit: state stays in App.vue), `McpServersView`.
+  - Modals: `SaveWorkflowModal`, `AddRowModal`, `DataTableModal`, `McpServerModal`,
+    `BatchValidateModal`, `AiContextModal`, and `CredentialModal` (self-contained: owns the
+    whole form + the OAuth connect flow — popup, `e.origin`-checked `postMessage`, listener
+    cleaned on unmount).
+  - Editor: `CustomNode` (pin badge), `NodeConfigPanel` (param form, inline JSON/cron
+    validation, pin/re-run controls), `ExpressionEditor`, `JsonTreeItem` (binary refs → download).
+- **utils.ts** — pure helpers (no reactive state): `statusLabel`, `formatFullDate`,
+  `credentialTypeLabel`, `mcpServerUrl`, `setNestedValue` (prototype-pollution-guarded),
+  `parseJsonColumns`, `coerceRowByColumns`. Unit-tested.
 - **focusTrap.ts** — global `v-focus-trap` directive for modals (Esc + click-outside + ARIA
-  are also wired).
-- **Frontend tests** — `vitest` + `@vue/test-utils` + jsdom (`frontend/vitest.config.ts`).
-  `utils.test.ts` covers the extracted helpers; `components/JsonTreeItem.test.ts` is a SFC
-  mount smoke test. Run via `npm run test -w frontend` (included in root `npm test`).
+  are also wired). Mount tests stub it via `global.directives`.
+- **Frontend tests** — `vitest` + `@vue/test-utils` + jsdom (`frontend/vitest.config.ts`): a
+  mount test per extracted component (props render, emits, key behaviors) + `utils.test.ts`.
+  Run via `npm run test -w frontend` (included in root `npm test`).
 
 ## Conventions
 
