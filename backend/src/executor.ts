@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { WorkflowEngine, WorkflowExecutionReport } from './engine.js';
+import { WorkflowEngine, WorkflowExecutionReport, ResumeState } from './engine.js';
 import {
   getWorkflowById, saveExecution, pruneOldExecutions,
   savePendingResume, getPendingResume, deletePendingResume,
@@ -10,6 +10,8 @@ export interface ExecuteOptions {
   // Manual test runs set this to honor pinned node data. Triggered/production runs leave it
   // off so flows still hit their real nodes.
   usePinData?: boolean;
+  // "Re-run from a node": replay reusing cached outputs except the target + its descendants.
+  resume?: ResumeState;
 }
 
 // Per-workflow serialization: chains executions of the same workflow id so concurrent
@@ -79,7 +81,7 @@ async function runWorkflowAndRecord(
   }
 
   const engine = new WorkflowEngine();
-  const report = await engine.execute(workflow, payload, { executionId, usePinData: options.usePinData });
+  const report = await engine.execute(workflow, payload, { executionId, usePinData: options.usePinData }, options.resume);
 
   // A `wait` node suspended the run: persist it as 'waiting' + a pending-resume record,
   // and stop here. POST /hooks/resume/:token continues it later.
