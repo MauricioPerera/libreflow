@@ -32,3 +32,11 @@ jobs:
 
       - name: Test (backend + frontend)
         run: npm test
+
+  # Verifica que la imagen Docker (multi-stage: native build + frontend + runtime) se construye.
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t libreflow:ci .

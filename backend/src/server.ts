@@ -1,4 +1,5 @@
 import express from 'express';
+import path from 'node:path';
 import cors from 'cors';
 import compression from 'compression';
 import { WorkflowEngine, buildRerunResume } from './engine.js';
@@ -908,6 +909,21 @@ app.post('/form/:workflowId', express.urlencoded({ extended: true }), async (req
     if (!res.headersSent) return serverError(res, err);
   }
 });
+
+// Serve the built frontend (single-container production deploy). `LF_STATIC_DIR` points at
+// frontend/dist; it's unset in dev (Vite serves the frontend on :5173 and proxies /api).
+const staticDir = process.env.LF_STATIC_DIR;
+if (staticDir) {
+  app.use(express.static(staticDir));
+  // SPA fallback: any non-API GET returns index.html for client-side routing. Backend route
+  // prefixes are excluded so they keep their own handlers / 404s.
+  app.get('*', (req, res, next) => {
+    const p = req.path;
+    if (p.startsWith('/api') || p.startsWith('/hooks') || p.startsWith('/mcp') ||
+        p.startsWith('/oauth') || p.startsWith('/form')) return next();
+    return res.sendFile(path.join(staticDir, 'index.html'));
+  });
+}
 
 // Initialize database then start server
 let server: any;

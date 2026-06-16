@@ -1,0 +1,23 @@
+# Despliegue de LibreFlow en un solo contenedor (backend sirviendo el frontend estático).
+# Uso:  cp .env.example .env  &&  (edita los secretos)  &&  docker compose up -d --build
+services:
+  libreflow:
+    build: .
+    image: libreflow
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      # URL pública de esta instancia (para redirect_uri de OAuth y URLs de webhook/form).
+      LF_PUBLIC_URL: ${LF_PUBLIC_URL:-http://localhost:3000}
+      # Secretos REQUERIDOS en producción (compose falla si no están en .env).
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?define ENCRYPTION_KEY en .env}
+      LF_API_KEY: ${LF_API_KEY:?define LF_API_KEY en .env}
+      LF_WEBHOOK_SECRET: ${LF_WEBHOOK_SECRET:-}
+    volumes:
+      # SQLite (flujos, credenciales cifradas, ejecuciones, binarios, tablas) -> volumen.
+      - libreflow-data:/data
+    restart: unless-stopped
+
+volumes:
+  libreflow-data:
