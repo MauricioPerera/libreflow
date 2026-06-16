@@ -6,6 +6,10 @@ export interface WorkflowNode {
   type: string;
   name: string;
   parameters: Record<string, any>;
+  // Salida fijada (pin): cuando está presente y la ejecución es manual (usePinData), el motor
+  // usa este valor en vez de ejecutar el nodo. Útil para iterar aguas abajo sin re-llamar a
+  // APIs/nodos caros. Ignorado en producción (triggers).
+  pinData?: any;
 }
 
 const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor']);

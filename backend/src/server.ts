@@ -148,7 +148,8 @@ app.post('/api/workflows/run', async (req, res) => {
       return res.status(400).json({ error: 'Invalid workflow. connections must be an array.' });
     }
 
-    const report = await executeWorkflowAndRecord(workflow, payload);
+    // Manual test run from the editor: honor pinned node data (`pinData`).
+    const report = await executeWorkflowAndRecord(workflow, payload, { usePinData: true });
     return res.json(report);
   } catch (err: any) {
     // Workflow-structure errors are user-facing; everything else is masked.

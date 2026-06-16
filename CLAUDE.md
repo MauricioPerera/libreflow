@@ -28,6 +28,11 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   reading `$node.Loop.output.items`; default 1 keeps the item-at-a-time `.item`/`.index`/
   `.isLast` shape). Exports `WorkflowValidationError` for user-facing structural
   errors (surfaced as HTTP 400). A step cap (`LF_MAX_EXECUTION_STEPS`) guards infinite loops.
+  **Pin data**: a node may carry `pinData`; on **manual** runs (`execMeta.usePinData`, set only
+  by `POST /api/workflows/run`) the engine uses it instead of executing the node — iterate
+  downstream without re-calling expensive/external nodes. Ignored in production (triggered runs
+  don't set the flag). Honors if/switch branch routing from the pinned output; result flagged
+  `pinned: true`.
 - **nodes.ts** — `executeNode` + expression resolution `{{ $node.Name.output.path }}`.
   Ephemeral params (loop state, trigger payload) are passed as `paramOverrides` — the engine
   NEVER mutates the shared node object (keeps re-runs deterministic). Prototype-pollution

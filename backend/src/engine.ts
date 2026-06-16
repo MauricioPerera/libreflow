@@ -53,6 +53,7 @@ export interface NodeExecutionResult {
   nodeName: string;
   status: 'success' | 'failed' | 'skipped';
   output?: any;
+  pinned?: boolean;          // true when the output came from pinned data (manual run)
   error?: string;
   startTime?: string;
   endTime?: string;
@@ -156,7 +157,7 @@ export class WorkflowEngine {
   async execute(
     workflow: Workflow,
     initialPayload: Record<string, any> = {},
-    execMeta: { depth?: number; stack?: string[]; executionId?: string } = {},
+    execMeta: { depth?: number; stack?: string[]; executionId?: string; usePinData?: boolean } = {},
     resume?: ResumeState
   ): Promise<WorkflowExecutionReport> {
     const genToken = () => 'rsm-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -172,6 +173,7 @@ export class WorkflowEngine {
     const wfId = (workflow as any).id;
     const execStack = execMeta.stack ?? (wfId ? [wfId] : []);
     const execExecutionId = execMeta.executionId;
+    const usePinData = execMeta.usePinData ?? false;
 
     // --- Build helper maps ---
     const nodeMap = new Map<string, WorkflowNode>();
@@ -477,6 +479,28 @@ export class WorkflowEngine {
           const at = new Date().toISOString();
           nodeResults[nodeId] = { nodeId, nodeName: node.name, status: 'skipped', startTime: at, endTime: at, durationMs: 0 };
           for (const conn of outgoingMap.get(nodeId) || []) propagate(conn, 'skipped');
+          continue;
+        }
+
+        // --- Pinned data (manual runs only): use the stored output instead of executing ---
+        // Lets you iterate downstream without re-calling expensive/external nodes. Ignored in
+        // production (triggered runs don't set usePinData). Mirrors the resume branch-routing.
+        if (usePinData && node.type !== 'loop' && node.pinData !== undefined) {
+          const now = new Date().toISOString();
+          const output = node.pinData;
+          context[node.name] = { output };
+          nodeResults[nodeId] = { nodeId, nodeName: node.name, status: 'success', output, pinned: true, startTime: now, endTime: now, durationMs: 0 };
+          for (const conn of outgoingMap.get(nodeId) || []) {
+            let pathStatus: 'success' | 'skipped' = 'success';
+            if (node.type === 'if') {
+              const r = (output as any)?.result;
+              if (conn.sourceHandle === 'true' && !r) pathStatus = 'skipped';
+              else if (conn.sourceHandle === 'false' && r) pathStatus = 'skipped';
+            } else if (node.type === 'switch') {
+              if (conn.sourceHandle !== (output as any)?.matched) pathStatus = 'skipped';
+            }
+            propagate(conn, pathStatus);
+          }
           continue;
         }
 

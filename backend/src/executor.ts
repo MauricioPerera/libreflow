@@ -7,6 +7,9 @@ import {
 
 export interface ExecuteOptions {
   executionId?: string;
+  // Manual test runs set this to honor pinned node data. Triggered/production runs leave it
+  // off so flows still hit their real nodes.
+  usePinData?: boolean;
 }
 
 // Per-workflow serialization: chains executions of the same workflow id so concurrent
@@ -76,7 +79,7 @@ async function runWorkflowAndRecord(
   }
 
   const engine = new WorkflowEngine();
-  const report = await engine.execute(workflow, payload, { executionId });
+  const report = await engine.execute(workflow, payload, { executionId, usePinData: options.usePinData });
 
   // A `wait` node suspended the run: persist it as 'waiting' + a pending-resume record,
   // and stop here. POST /hooks/resume/:token continues it later.
