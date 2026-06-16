@@ -133,7 +133,9 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   checks `res.ok`; `applyExecutionResults` is the shared node/edge status-styling helper.
   Unsaved-changes are tracked via `isDirty` (+ beforeunload). The Ejecuciones view shows a
   status badge per run and a "🤖 Contexto IA" button on failed runs (fetches
-  `/api/executions/:id/llm-context` into a copy-to-clipboard modal).
+  `/api/executions/:id/llm-context` into a copy-to-clipboard modal). On save, the editor
+  paints the coherence `validation` returned by the API as a floating banner over the canvas
+  (errors/warnings; clicking an issue selects the offending node via `focusIssueNode`).
 - **components/** — `CustomNode`, `NodeConfigPanel` (param form, inline JSON/cron validation),
   `ExpressionEditor`, `JsonTreeItem`.
 - **focusTrap.ts** — global `v-focus-trap` directive for modals (Esc + click-outside + ARIA
