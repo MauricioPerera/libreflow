@@ -44,4 +44,17 @@ describe('NodeConfigPanel — control de pin', () => {
     expect(w.text()).not.toContain('Fijar esta salida');
     expect(w.text()).not.toContain('Salida fijada');
   });
+
+  it('con un resultado previo muestra "Re-ejecutar desde aquí" y emite rerun(nodeId)', async () => {
+    const w = mountPanel(setNode(), { status: 'success', output: { a: 1 } });
+    const btn = w.findAll('button').find((b) => b.text().includes('Re-ejecutar desde aquí'));
+    expect(btn).toBeTruthy();
+    await btn!.trigger('click');
+    expect(w.emitted('rerun')![0]).toEqual(['n1']);
+  });
+
+  it('sin resultado previo no muestra el botón de re-ejecutar', () => {
+    const w = mountPanel(setNode(), null);
+    expect(w.text()).not.toContain('Re-ejecutar desde aquí');
+  });
 });

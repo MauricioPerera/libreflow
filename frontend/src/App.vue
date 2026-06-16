@@ -146,9 +146,9 @@
         <button @click="promptSaveWorkflow" :disabled="isPreviewMode" class="btn btn-secondary" style="border-color: hsla(var(--color-primary) / 0.4); color: hsl(var(--color-primary)); margin: 0;">
           💾 Guardar
         </button>
-        <button 
-          @click="runWorkflow" 
-          :disabled="isRunning || isPreviewMode" 
+        <button
+          @click="runWorkflow()"
+          :disabled="isRunning || isPreviewMode"
           class="btn btn-primary"
           style="margin: 0;"
         >
@@ -301,6 +301,7 @@
               @update-params="updateNodeParams"
               @update-name="updateNodeName"
               @set-pin="setNodePin"
+              @rerun="rerunFromNode"
               @close="selectedNode = null"
               @open-expression-editor="handleOpenExpressionEditor"
             />
@@ -820,6 +821,12 @@ const updateNodeName = (name: string) => {
   }
 };
 
+// Re-ejecuta el flujo desde un nodo, reusando las salidas cacheadas aguas arriba.
+const rerunFromNode = (nodeId: string) => {
+  if (isRunning.value) return;
+  runWorkflow(nodeId);
+};
+
 // Fija (o quita) la salida de un nodo (pin data). value=null quita el pin.
 const setNodePin = (value: any) => {
   if (!selectedNode.value) return;
@@ -1219,11 +1226,15 @@ const loadPastExecution = async (execId: string) => {
 };
 
 // Runner orchestrator
-const runWorkflow = async () => {
+const runWorkflow = async (rerunFrom?: string) => {
+  // Re-ejecutar desde un nodo: reusa las salidas de la última ejecución (capturadas antes de
+  // limpiar el report) para todo salvo ese nodo y sus descendientes.
+  const priorResults = rerunFrom ? executionReport.value?.nodeResults : undefined;
+
   isRunning.value = true;
   executionReport.value = null;
   activeExecutionId.value = null;
-  
+
   // Set all to running
   for (const n of nodes.value) {
     nodeStatuses.value[n.id] = 'running';
@@ -1251,12 +1262,13 @@ const runWorkflow = async () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         workflow: {
-          id: activeWorkflowId.value || undefined, 
+          id: activeWorkflowId.value || undefined,
           onErrorWorkflowId: onErrorWorkflowId.value || undefined,
           nodes: backendNodes,
           connections: backendConnections
         },
-        payload: {}
+        payload: {},
+        ...(rerunFrom && priorResults ? { rerunFrom, priorResults } : {})
       })
     });
 

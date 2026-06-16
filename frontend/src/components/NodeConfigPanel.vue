@@ -300,6 +300,13 @@
         </div>
       </div>
 
+      <!-- Re-ejecutar desde este nodo (reusa las salidas cacheadas aguas arriba) -->
+      <div v-if="result && node?.id" style="margin-bottom: 12px;">
+        <button @click="emit('rerun', node.id)" class="btn btn-secondary" style="padding:6px 12px; font-size:12px;" title="Vuelve a ejecutar el flujo desde aquí, reusando las salidas ya calculadas de los nodos anteriores">
+          ▶ Re-ejecutar desde aquí
+        </button>
+      </div>
+
       <!-- Pin de datos: fija la salida del nodo para no re-ejecutarlo en pruebas manuales -->
       <div v-if="isPinned || result?.output" class="results-section" style="margin-bottom: 12px;">
         <div v-if="isPinned" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
@@ -389,6 +396,7 @@ const emit = defineEmits<{
   (e: 'update-name', name: string): void;
   (e: 'open-expression-editor', targetField: string, displayName: string, expression: string): void;
   (e: 'set-pin', value: any): void; // value = salida a fijar, o null para quitar el pin
+  (e: 'rerun', nodeId: string): void; // re-ejecutar el flujo desde este nodo
   (e: 'close'): void;
 }>();
 
