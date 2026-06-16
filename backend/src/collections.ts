@@ -123,3 +123,64 @@ export function uniqueItems(items: any, opts: { field?: string }): any[] {
   }
   return out;
 }
+
+// ----- Consenso de respuestas de agente (ensemble / self-consistency) -----
+
+export type ConsensusStrategy = 'first' | 'majority' | 'mostSimilar';
+
+function _tokenSet(s: string): Set<string> {
+  return new Set(s.toLowerCase().split(/[^a-z0-9]+/g).filter(Boolean));
+}
+function _jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 1;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  const union = a.size + b.size - inter;
+  return union === 0 ? 1 : inter / union;
+}
+
+/**
+ * Fusiona las respuestas de N ejecuciones de agente ELIGIENDO una (no fusiona prosa libre):
+ *  - `first`: la primera (baseline).
+ *  - `majority`: la más repetida (igualdad exacta tras trim) — buena para clasificación / JSON corto.
+ *  - `mostSimilar`: la más "central" por solapamiento de tokens (Jaccard) — para texto libre.
+ * Devuelve la respuesta elegida y `agreement` (0-1): fracción que coincide (first/majority) o
+ * similitud media al resto (mostSimilar). NO usa embeddings (Jaccard es léxico).
+ */
+export function mergeAnswers(
+  answers: string[],
+  strategy: ConsensusStrategy = 'majority'
+): { answer: string; agreement: number; strategy: ConsensusStrategy } {
+  const list = answers.map(a => (a == null ? '' : String(a)));
+  if (list.length === 0) return { answer: '', agreement: 0, strategy };
+  if (list.length === 1) return { answer: list[0], agreement: 1, strategy };
+  const norm = (s: string) => s.trim();
+
+  if (strategy === 'first') {
+    const match = list.filter(a => norm(a) === norm(list[0])).length;
+    return { answer: list[0], agreement: match / list.length, strategy };
+  }
+
+  if (strategy === 'mostSimilar') {
+    const toks = list.map(_tokenSet);
+    let bestIdx = 0, bestAvg = -1;
+    for (let i = 0; i < list.length; i++) {
+      let sum = 0;
+      for (let j = 0; j < list.length; j++) if (i !== j) sum += _jaccard(toks[i], toks[j]);
+      const avg = sum / (list.length - 1);
+      if (avg > bestAvg) { bestAvg = avg; bestIdx = i; }
+    }
+    return { answer: list[bestIdx], agreement: Math.max(0, bestAvg), strategy };
+  }
+
+  // majority (default): igualdad exacta tras trim; empates → primera aparición.
+  const counts = new Map<string, number>();
+  for (const a of list) counts.set(norm(a), (counts.get(norm(a)) || 0) + 1);
+  let bestKey = norm(list[0]), bestCount = 0;
+  for (const a of list) {
+    const c = counts.get(norm(a))!;
+    if (c > bestCount) { bestCount = c; bestKey = norm(a); }
+  }
+  const answer = list.find(a => norm(a) === bestKey) ?? list[0];
+  return { answer, agreement: bestCount / list.length, strategy };
+}

@@ -55,7 +55,10 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   response (status/headers/body); the engine captures it into `report.httpResponse` and the
   webhook/form routes emit it. `NodeRegistry` is the single
   source of node types. `aiAgent` is an LLM tool-calling loop (OpenAI-compatible endpoint)
-  whose toolset is an MCP server — own (in-process) or external (SDK client). Shared
+  whose toolset is an MCP server — own (in-process) or external (SDK client). Optional
+  **self-consistency**: `runs > 1` runs the agent N times in parallel (one shared toolset, a
+  conversation per run) and merges the answers via `mergeAnswers` (`collections.ts`:
+  first/majority/mostSimilar), returning the consensus answer + an `agreement` ratio. Shared
   credential→auth helper (`resolveCredentialAuth`) used by httpRequest / mcpToolCall / aiAgent;
   schemes: basicAuth, apiKey, and **oauth2** (`oauth2.ts`: server-to-server client_credentials /
   refresh_token **plus interactive authorization_code + PKCE**, auto token fetch/refresh,

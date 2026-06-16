@@ -3,7 +3,7 @@ import { WorkflowSuspendError } from './engine.js';
 import { getCredentialById, getWorkflowById, getBinary } from './db.js';
 import { storeBinary, isBinaryRef, fileNameFromUrl, readResponseCapped, MAX_BINARY_BYTES } from './binary.js';
 import { parseFileBuffer, serializeToFile, detectFormat, parsePdfBuffer, FileFormat } from './fileParse.js';
-import { compareValues, filterItems, summarize, sortItems, limitItems, uniqueItems, Aggregation } from './collections.js';
+import { compareValues, filterItems, summarize, sortItems, limitItems, uniqueItems, Aggregation, mergeAnswers, ConsensusStrategy } from './collections.js';
 import ivm from 'isolated-vm';
 import { executeMcpToolCall } from './mcp.js';
 import { assertSafeUrl, safeFetch, isUnsafeKey } from './security.js';
@@ -1460,6 +1460,25 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       label: 'Timeout por llamada al LLM (ms)',
       type: 'string',
       default: '120000'
+    },
+    {
+      name: 'runs',
+      label: 'Ejecuciones en paralelo (consenso)',
+      type: 'string',
+      default: '1',
+      placeholder: '1 = una sola; >1 ejecuta N en paralelo y fusiona',
+      description: 'Self-consistency: con N>1 ejecuta el agente N veces (sube la temperatura para que diverjan) y devuelve la respuesta de consenso + un ratio de acuerdo. Coste = N× llamadas.'
+    },
+    {
+      name: 'consensus',
+      label: 'Estrategia de consenso (si runs > 1)',
+      type: 'options',
+      default: 'majority',
+      options: [
+        { label: 'Mayoría (respuesta más repetida)', value: 'majority' },
+        { label: 'Más similar (texto libre, centroide léxico)', value: 'mostSimilar' },
+        { label: 'La primera', value: 'first' }
+      ]
     }
   ],
   execute: async (params) => {
@@ -1476,7 +1495,9 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       mcpCredentialId,
       maxIterations = '5',
       temperature = '0',
-      timeoutMs = '120000'
+      timeoutMs = '120000',
+      runs = '1',
+      consensus = 'majority'
     } = params;
 
     if (!model) throw new Error('AI Agent error: model is required');
@@ -1537,70 +1558,84 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       };
     }
 
-    const messages: any[] = [];
-    if (systemPrompt) messages.push({ role: 'system', content: String(systemPrompt) });
-    messages.push({ role: 'user', content: String(userMessage) });
-
     const maxIter = Math.max(1, Math.min(20, Number(maxIterations) || 5));
     const temp = Number(temperature);
     const llmTimeout = Math.max(5000, Number(timeoutMs) || 120000);
-    const trace: any[] = [];
-    let answer = '';
-    let hitCap = true;
-
     const chatUrl = `${llmEndpoint.replace(/\/$/, '')}/chat/completions`;
 
-    try {
-    for (let i = 0; i < maxIter; i++) {
-      const body: any = { model, messages, temperature: isNaN(temp) ? 0 : temp, stream: false };
-      if (openaiTools.length) { body.tools = openaiTools; body.tool_choice = 'auto'; }
+    // Una ejecución del agente (conversación propia; toolset compartido entre runs).
+    const runOnce = async () => {
+      const messages: any[] = [];
+      if (systemPrompt) messages.push({ role: 'system', content: String(systemPrompt) });
+      messages.push({ role: 'user', content: String(userMessage) });
+      const trace: any[] = [];
+      let answer = '';
+      let hitCap = true;
 
-      // Abort a hung LLM call instead of blocking the workflow. The timer stays armed
-      // through the body read (a server can send headers then stall the stream).
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), llmTimeout);
-      let data: any;
-      try {
-        const res = await fetch(chatUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
-        if (!res.ok) {
-          const t = await res.text();
-          throw new Error(`AI Agent LLM error: HTTP ${res.status} ${t.slice(0, 200)}`);
-        }
-        data = await res.json();
-      } catch (err: any) {
-        if (err?.name === 'AbortError') throw new Error(`AI Agent error: LLM call timed out after ${llmTimeout}ms`);
-        throw err;
-      } finally {
-        clearTimeout(timer);
-      }
-      const msg = data.choices?.[0]?.message;
-      if (!msg) throw new Error('AI Agent error: no message in LLM response');
+      for (let i = 0; i < maxIter; i++) {
+        const body: any = { model, messages, temperature: isNaN(temp) ? 0 : temp, stream: false };
+        if (openaiTools.length) { body.tools = openaiTools; body.tool_choice = 'auto'; }
 
-      if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        answer = msg.content || '';
-        hitCap = false;
-        break;
-      }
-
-      messages.push(msg);
-      for (const tc of msg.tool_calls) {
-        let args: any = {};
-        try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* leave empty */ }
-        let resultText = '';
+        // Abort a hung LLM call instead of blocking the workflow. The timer stays armed
+        // through the body read (a server can send headers then stall the stream).
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), llmTimeout);
+        let data: any;
         try {
-          resultText = callTool ? await callTool(tc.function.name, args) : 'error: no toolset configured';
-        } catch (e: any) {
-          resultText = 'error: ' + e.message;
+          const res = await fetch(chatUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
+          if (!res.ok) {
+            const t = await res.text();
+            throw new Error(`AI Agent LLM error: HTTP ${res.status} ${t.slice(0, 200)}`);
+          }
+          data = await res.json();
+        } catch (err: any) {
+          if (err?.name === 'AbortError') throw new Error(`AI Agent error: LLM call timed out after ${llmTimeout}ms`);
+          throw err;
+        } finally {
+          clearTimeout(timer);
         }
-        trace.push({ tool: tc.function.name, arguments: args, result: resultText.slice(0, 2000) });
-        messages.push({ role: 'tool', tool_call_id: tc.id, content: String(resultText).slice(0, 4000) });
+        const msg = data.choices?.[0]?.message;
+        if (!msg) throw new Error('AI Agent error: no message in LLM response');
+
+        if (!msg.tool_calls || msg.tool_calls.length === 0) {
+          answer = msg.content || '';
+          hitCap = false;
+          break;
+        }
+
+        messages.push(msg);
+        for (const tc of msg.tool_calls) {
+          let args: any = {};
+          try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* leave empty */ }
+          let resultText = '';
+          try {
+            resultText = callTool ? await callTool(tc.function.name, args) : 'error: no toolset configured';
+          } catch (e: any) {
+            resultText = 'error: ' + e.message;
+          }
+          trace.push({ tool: tc.function.name, arguments: args, result: resultText.slice(0, 2000) });
+          messages.push({ role: 'tool', tool_call_id: tc.id, content: String(resultText).slice(0, 4000) });
+        }
       }
-    }
+      return { answer, iterations: trace.length, hitMaxIterations: hitCap && trace.length > 0, toolCalls: trace };
+    };
+
+    try {
+      const n = Math.max(1, Math.min(10, Number(runs) || 1));
+      // runs=1: comportamiento clásico (misma forma de salida que antes).
+      if (n === 1) return await runOnce();
+      // Self-consistency: N en paralelo (la latencia es la run más lenta) + consenso.
+      const results = await Promise.all(Array.from({ length: n }, () => runOnce()));
+      const merged = mergeAnswers(results.map(r => r.answer), consensus as ConsensusStrategy);
+      return {
+        answer: merged.answer,
+        agreement: merged.agreement,   // 0-1: cuánto coincidieron las N ejecuciones
+        consensus: merged.strategy,
+        runs: results.map(r => ({ answer: r.answer, iterations: r.iterations, toolCalls: r.toolCalls }))
+      };
     } finally {
       mcpSession?.close();
     }
-
-    return { answer, iterations: trace.length, hitMaxIterations: hitCap && trace.length > 0, toolCalls: trace };
   }
 };
 
