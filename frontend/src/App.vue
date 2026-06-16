@@ -610,73 +610,17 @@
     />
 
     <!-- Create/Edit Data Table Modal -->
-    <div v-if="showDataTableModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
-      <div class="modal-content" style="width: 520px; max-width: 95%;">
-        <h3 class="modal-title">{{ editingTableId ? 'Editar Columnas' : 'Crear Tabla de Datos' }}</h3>
-        <p class="modal-desc">Define el nombre y las columnas de la tabla. Las columnas especifican el tipo de datos.</p>
-
-        <div class="form-group" style="margin-top: 12px;">
-          <label class="config-label">Nombre de la Tabla</label>
-          <input 
-            v-model="dataTableName" 
-            placeholder="ej: leads, clientes" 
-            class="config-input" 
-            :disabled="!!editingTableId" 
-          />
-        </div>
-
-        <div class="form-group" style="margin-top: 16px;">
-          <label class="config-label" style="display: flex; justify-content: space-between; align-items: center;">
-            <span>Columnas</span>
-            <button @click="addColumnToSchema" class="btn btn-secondary" style="padding: 2px 8px; font-size: 12px;">+ Añadir Columna</button>
-          </label>
-
-          <div style="max-height: 200px; overflow-y: auto; margin-top: 8px;">
-            <div v-for="(col, index) in dataTableColumns" :key="index" style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
-              <input 
-                v-model="col.name" 
-                placeholder="Nombre de columna" 
-                class="config-input" 
-                style="flex-grow: 1; padding: 6px 10px; font-size: 13px;"
-              />
-              <select v-model="col.type" class="config-select" style="width: 120px; padding: 6px 10px; font-size: 13px;">
-                <option value="string">Texto</option>
-                <option value="number">Número</option>
-                <option value="boolean">Booleano</option>
-              </select>
-              <button @click="removeColumnFromSchema(index)" class="btn btn-secondary" style="padding: 6px 10px; font-size: 13px; border-color: transparent; color: hsl(var(--color-danger));">
-                ✕
-              </button>
-            </div>
-            <div v-if="dataTableColumns.length === 0" style="font-size: 12px; color: hsl(var(--text-muted)); text-align: center; padding: 12px;">
-              No hay columnas definidas. Añade al menos una.
-            </div>
-          </div>
-        </div>
-
-        <div class="form-group" style="margin-top: 16px;">
-          <label class="config-label">Columna clave (única) — opcional</label>
-          <select v-model="dataTableKeyColumn" class="config-input">
-            <option value="">Sin clave (tabla simple)</option>
-            <option v-for="col in dataTableColumns.filter(c => c.name.trim())" :key="col.name" :value="col.name">{{ col.name }}</option>
-          </select>
-          <p style="font-size: 12px; color: hsl(var(--text-muted)); margin-top: 4px;">
-            Habilita upsert, incrementar contador, get-or-default e idempotencia (una fila por valor de clave).
-          </p>
-        </div>
-
-        <div class="modal-actions" style="margin-top: 24px;">
-          <button @click="showDataTableModal = false" class="btn btn-secondary">Cancelar</button>
-          <button 
-            @click="saveDataTableToDb" 
-            class="btn btn-primary" 
-            :disabled="!dataTableName.trim() || dataTableColumns.length === 0 || dataTableColumns.some(c => !c.name.trim())"
-          >
-            Guardar
-          </button>
-        </div>
-      </div>
-    </div>
+    <DataTableModal
+      v-if="showDataTableModal"
+      :editing-table-id="editingTableId"
+      v-model:name="dataTableName"
+      v-model:key-column="dataTableKeyColumn"
+      :columns="dataTableColumns"
+      @add-column="addColumnToSchema"
+      @remove-column="removeColumnFromSchema"
+      @close="showDataTableModal = false"
+      @save="saveDataTableToDb"
+    />
 
     <!-- Add/Edit Row Modal -->
     <AddRowModal
@@ -828,6 +772,7 @@ import DataTablesList from './components/DataTablesList.vue';
 import DataTableDetail from './components/DataTableDetail.vue';
 import SaveWorkflowModal from './components/SaveWorkflowModal.vue';
 import AddRowModal from './components/AddRowModal.vue';
+import DataTableModal from './components/DataTableModal.vue';
 import McpServersView from './components/McpServersView.vue';
 import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
