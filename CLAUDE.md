@@ -131,7 +131,9 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   Ejecuciones, Credenciales, Tablas de Datos, **Servidores MCP** (CRUD a named server's
   workflow group + token + URL). Calls the backend via `/api` (Vite proxy). `apiGetJson`
   checks `res.ok`; `applyExecutionResults` is the shared node/edge status-styling helper.
-  Unsaved-changes are tracked via `isDirty` (+ beforeunload).
+  Unsaved-changes are tracked via `isDirty` (+ beforeunload). The Ejecuciones view shows a
+  status badge per run and a "🤖 Contexto IA" button on failed runs (fetches
+  `/api/executions/:id/llm-context` into a copy-to-clipboard modal).
 - **components/** — `CustomNode`, `NodeConfigPanel` (param form, inline JSON/cron validation),
   `ExpressionEditor`, `JsonTreeItem`.
 - **focusTrap.ts** — global `v-focus-trap` directive for modals (Esc + click-outside + ARIA
