@@ -17,6 +17,15 @@ export function statusLabel(status: string): string {
   } as Record<string, string>)[status] || status;
 }
 
+/** Etiqueta legible para el tipo de una credencial. */
+export function credentialTypeLabel(type: string): string {
+  return ({
+    basicAuth: 'Basic Auth (Usuario/Contraseña)',
+    oauth2: 'OAuth2 (token + refresh)',
+    apiKey: 'API Key (Token de Cabecera/Query)',
+  } as Record<string, string>)[type] || 'API Key (Token de Cabecera/Query)';
+}
+
 /** Formatea una fecha ISO a "dd/mm/aaaa hh:mm:ss" local; devuelve la entrada si no parsea. */
 export function formatFullDate(dateStr: string): string {
   try {
