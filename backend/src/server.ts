@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
-import { WorkflowEngine } from './engine.js';
+import { WorkflowEngine, buildRerunResume } from './engine.js';
 import { executeWorkflowAndRecord, resumeWorkflowAndRecord } from './executor.js';
 import { 
   initDatabase, 
@@ -140,7 +140,7 @@ app.get('/api/node-types', (req, res) => {
 // API WORKFLOW RUNNER
 app.post('/api/workflows/run', async (req, res) => {
   try {
-    const { workflow, payload } = req.body;
+    const { workflow, payload, rerunFrom, priorResults } = req.body;
     if (!workflow || !Array.isArray(workflow.nodes)) {
       return res.status(400).json({ error: 'Invalid workflow. Must contain a list of nodes.' });
     }
@@ -148,8 +148,15 @@ app.post('/api/workflows/run', async (req, res) => {
       return res.status(400).json({ error: 'Invalid workflow. connections must be an array.' });
     }
 
+    // "Re-ejecutar desde un nodo": reusa las salidas cacheadas (priorResults) salvo el nodo
+    // indicado y sus descendientes, que se vuelven a ejecutar.
+    let resume;
+    if (typeof rerunFrom === 'string' && rerunFrom && priorResults && typeof priorResults === 'object') {
+      resume = buildRerunResume(workflow, rerunFrom, priorResults);
+    }
+
     // Manual test run from the editor: honor pinned node data (`pinData`).
-    const report = await executeWorkflowAndRecord(workflow, payload, { usePinData: true });
+    const report = await executeWorkflowAndRecord(workflow, payload, { usePinData: true, resume });
     return res.json(report);
   } catch (err: any) {
     // Workflow-structure errors are user-facing; everything else is masked.
