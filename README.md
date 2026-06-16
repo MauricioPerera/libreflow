@@ -19,8 +19,9 @@ with an Express + SQLite backend and a Vue 3 + Vue Flow frontend.
   (`responseMode`: `lastNode`/`respondNode`) and the `respond` node returns a custom
   status/headers/body. A **form trigger** serves an auto-generated public web form
   (`GET/POST /form/:workflowId`) that runs the flow on submit.
-- **File content** — `extractFromFile` parses **CSV/XLSX/JSON/text** into structured rows;
-  `convertToFile` generates them back into a downloadable binary (via SheetJS).
+- **File content** — `extractFromFile` parses **CSV/XLSX/JSON/text** into structured rows and
+  extracts **text from PDF**; `convertToFile` generates CSV/XLSX/JSON/text back into a
+  downloadable binary (SheetJS + pdf-parse).
 - **Collection primitives** — `switch` (N-way routing by rules), `filter`, and `aggregate`
   (group-by + count/sum/avg/min/max, sort, limit, dedupe) — local, deterministic, no LLM.
 - **Data-table state engine** — unique-key idempotency, atomic `upsert` / `increment` /

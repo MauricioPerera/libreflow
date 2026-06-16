@@ -2,7 +2,7 @@ import { LibreFlowNodeDefinition } from './sdk.js';
 import { WorkflowSuspendError } from './engine.js';
 import { getCredentialById, getWorkflowById, getBinary } from './db.js';
 import { storeBinary, isBinaryRef, fileNameFromUrl } from './binary.js';
-import { parseFileBuffer, serializeToFile, detectFormat, FileFormat } from './fileParse.js';
+import { parseFileBuffer, serializeToFile, detectFormat, parsePdfBuffer, FileFormat } from './fileParse.js';
 import { compareValues, filterItems, summarize, sortItems, limitItems, uniqueItems, Aggregation } from './collections.js';
 import ivm from 'isolated-vm';
 import { executeMcpToolCall } from './mcp.js';
@@ -1245,7 +1245,8 @@ const extractFromFileNode: LibreFlowNodeDefinition = {
         { label: 'CSV', value: 'csv' },
         { label: 'Excel (XLSX)', value: 'xlsx' },
         { label: 'JSON', value: 'json' },
-        { label: 'Texto', value: 'text' }
+        { label: 'Texto', value: 'text' },
+        { label: 'PDF (extraer texto)', value: 'pdf' }
       ]
     },
     {
@@ -1278,6 +1279,11 @@ const extractFromFileNode: LibreFlowNodeDefinition = {
     const fmt: FileFormat = params.format && params.format !== 'auto'
       ? params.format
       : detectFormat({ mimeType: bin.mime_type || ref.mimeType, fileName: bin.file_name || ref.fileName });
+
+    // El PDF es extracción de texto asíncrona (pdf.js); el resto, parseo síncrono.
+    if (fmt === 'pdf') {
+      return await parsePdfBuffer(bin.data);
+    }
 
     return parseFileBuffer(bin.data, {
       format: fmt,

@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initDatabase, getBinary } from '../src/db.js';
-import { isBinaryRef } from '../src/binary.js';
+import { isBinaryRef, storeBinary } from '../src/binary.js';
 import { WorkflowEngine } from '../src/engine.js';
-import { detectFormat, parseFileBuffer, serializeToFile } from '../src/fileParse.js';
+import { detectFormat, parseFileBuffer, serializeToFile, parsePdfBuffer } from '../src/fileParse.js';
+
+// PDF mínimo válido con el texto "Hola PDF" (un solo objeto de página).
+const MINIMAL_PDF_B64 = 'JVBERi0xLjQKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCA2MTIgNzkyXS9SZXNvdXJjZXM8PC9Gb250PDwvRjEgNCAwIFI+Pj4+L0NvbnRlbnRzIDUgMCBSPj4KZW5kb2JqCjQgMCBvYmoKPDwvVHlwZS9Gb250L1N1YnR5cGUvVHlwZTEvQmFzZUZvbnQvSGVsdmV0aWNhPj4KZW5kb2JqCjUgMCBvYmoKPDwvTGVuZ3RoIDQ0Pj4Kc3RyZWFtCkJUCi9GMSAyNCBUZgoxMDAgNzAwIFRkCihIb2xhIFBERikgVGoKRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDUgMDAwMDAgbiAKMDAwMDAwMDMxNyAwMDAwMCBuIAp0cmFpbGVyCjw8L1NpemUgNi9Sb290IDEgMCBSPj4Kc3RhcnR4cmVmCjQxMQolJUVPRgo';
+const MINIMAL_PDF = Buffer.from(MINIMAL_PDF_B64, 'base64');
 
 describe('fileParse: detectFormat', () => {
   it('detecta por extensión y mime', () => {
@@ -61,6 +65,18 @@ describe('fileParse: parse/serialize puros', () => {
     expect(mimeType).toBe('application/json');
     expect(JSON.parse(buffer.toString('utf8'))).toEqual({ a: 1 });
   });
+
+  it('detectFormat reconoce PDF', () => {
+    expect(detectFormat({ fileName: 'doc.pdf' })).toBe('pdf');
+    expect(detectFormat({ mimeType: 'application/pdf' })).toBe('pdf');
+  });
+
+  it('parsePdfBuffer extrae el texto', async () => {
+    const r = await parsePdfBuffer(MINIMAL_PDF);
+    expect(r.format).toBe('pdf');
+    expect(r.pages).toBe(1);
+    expect(r.text).toContain('Hola PDF');
+  });
 });
 
 describe('Nodos extractFromFile / convertToFile (end-to-end por el motor + store)', () => {
@@ -99,6 +115,22 @@ describe('Nodos extractFromFile / convertToFile (end-to-end por el motor + store
     // extractFromFile recupera exactamente las filas originales.
     expect(report.nodeResults['ext'].output.rowCount).toBe(2);
     expect(report.nodeResults['ext'].output.rows).toEqual(rows);
+  });
+
+  it('extractFromFile (pdf/auto) extrae el texto de un PDF del store', async () => {
+    const ref = await storeBinary(MINIMAL_PDF, { executionId: 'exec-pdf', fileName: 'doc.pdf', mimeType: 'application/pdf' });
+    const workflow = {
+      id: 'wf-pdf',
+      nodes: [
+        { id: 't', type: 'trigger', name: 'Start', parameters: {} },
+        { id: 'ext', type: 'extractFromFile', name: 'Extract', parameters: { source: '{{ $node.Start.output.payload.ref }}', format: 'auto' } },
+      ],
+      connections: [{ source: 't', target: 'ext' }],
+    };
+    const report = await engine.execute(workflow as any, { ref }, { executionId: 'exec-pdf' });
+    expect(report.success).toBe(true);
+    expect(report.nodeResults['ext'].output.format).toBe('pdf');
+    expect(report.nodeResults['ext'].output.text).toContain('Hola PDF');
   });
 
   it('extractFromFile falla claro si source no es un binario', async () => {

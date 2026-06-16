@@ -109,7 +109,8 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   `summarize` (group by + count/sum/avg/min/max), `sortItems`, `limitItems`, `uniqueItems`,
   `getPath` (dotted paths). Backs the switch/filter/aggregate nodes.
 - **fileParse.ts** — pure parse/serialize of file CONTENT via SheetJS (`xlsx`): `parseFileBuffer`
-  / `serializeToFile` / `detectFormat` for CSV/XLSX/JSON/text. Sanitizes object keys on parse
+  / `serializeToFile` / `detectFormat` for CSV/XLSX/JSON/text, plus `parsePdfBuffer` (async, PDF
+  text extraction via `pdf-parse` v2 / pdf.js — extract-only). Sanitizes object keys on parse
   (`isUnsafeKey`) to mitigate SheetJS 0.18.x prototype pollution. Used by the
   extractFromFile/convertToFile nodes; the bytes live in the binary store, never inline.
 - **forms.ts** — public **form trigger** rendering (no DB, no state): `renderFormPage` /
