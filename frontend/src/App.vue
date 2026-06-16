@@ -819,7 +819,12 @@
             <select v-model="oauthGrantType" class="config-input">
               <option value="client_credentials">Client Credentials (machine-to-machine)</option>
               <option value="refresh_token">Refresh Token</option>
+              <option value="authorization_code">Authorization Code (login del usuario + PKCE)</option>
             </select>
+          </div>
+          <div class="config-group" v-if="oauthGrantType === 'authorization_code'">
+            <label class="config-label">AUTHORIZATION URL</label>
+            <input v-model="oauthAuthUrl" type="text" class="config-input" placeholder="https://accounts.ejemplo.com/o/oauth2/v2/auth" />
           </div>
           <div class="config-group">
             <label class="config-label">TOKEN URL</label>
@@ -847,6 +852,32 @@
               <option value="header">Cabecera HTTP Basic (recomendado)</option>
               <option value="body">En el cuerpo (client_id / client_secret)</option>
             </select>
+          </div>
+
+          <!-- Flujo interactivo: registro del redirect + conexión -->
+          <div v-if="oauthGrantType === 'authorization_code'">
+            <label class="config-checkbox" style="display:flex;align-items:center;gap:8px;margin:8px 0;">
+              <input type="checkbox" v-model="oauthUsePkce" /> Usar PKCE (S256, recomendado)
+            </label>
+            <label class="config-checkbox" style="display:flex;align-items:center;gap:8px;margin:8px 0;">
+              <input type="checkbox" v-model="oauthOfflineAccess" /> Solicitar refresh token (access_type=offline)
+            </label>
+            <div class="config-group">
+              <label class="config-label">REDIRECT URI (regístralo en la app del proveedor)</label>
+              <input :value="oauthRedirectUri" readonly class="config-input" @focus="(e:any)=>e.target.select()" />
+            </div>
+            <div class="config-group">
+              <p v-if="!editingCredentialId" style="font-size:12px;color:var(--color-text-muted);">
+                Guarda la credencial primero; luego podrás conectarla.
+              </p>
+              <div v-else style="display:flex;align-items:center;gap:10px;">
+                <button @click="connectOAuth" class="btn btn-secondary" :disabled="oauthConnecting">
+                  {{ oauthConnecting ? 'Conectando…' : (oauthConnected ? 'Reconectar' : 'Conectar') }}
+                </button>
+                <span v-if="oauthConnected" style="color:#16a34a;font-size:13px;">✅ Conectada</span>
+                <span v-if="oauthConnectError" style="color:#dc2626;font-size:13px;">{{ oauthConnectError }}</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1113,14 +1144,21 @@ const credPassword = ref('');
 const credKeyName = ref('');
 const credKeyValue = ref('');
 const credKeyIn = ref<'header' | 'query'>('header');
-// OAuth2 (server-to-server)
-const oauthGrantType = ref<'client_credentials' | 'refresh_token'>('client_credentials');
+// OAuth2
+const oauthGrantType = ref<'client_credentials' | 'refresh_token' | 'authorization_code'>('client_credentials');
+const oauthAuthUrl = ref('');
 const oauthTokenUrl = ref('');
 const oauthClientId = ref('');
 const oauthClientSecret = ref('');
 const oauthRefreshToken = ref('');
 const oauthScope = ref('');
 const oauthClientAuth = ref<'header' | 'body'>('header');
+const oauthUsePkce = ref(true);
+const oauthOfflineAccess = ref(true);
+const oauthRedirectUri = ref('');
+const oauthConnecting = ref(false);
+const oauthConnected = ref(false);
+const oauthConnectError = ref('');
 
 // Validación del formulario de credencial según su tipo.
 const canSaveCredential = computed(() => {
@@ -1130,10 +1168,53 @@ const canSaveCredential = computed(() => {
   if (credentialType.value === 'oauth2') {
     if (!oauthTokenUrl.value.trim() || !oauthClientId.value.trim()) return false;
     if (oauthGrantType.value === 'refresh_token' && !oauthRefreshToken.value.trim()) return false;
+    if (oauthGrantType.value === 'authorization_code' && !oauthAuthUrl.value.trim()) return false;
     return true;
   }
   return false;
 });
+
+// Carga el redirect_uri que el usuario debe registrar en el proveedor.
+const fetchOAuthRedirectUri = async () => {
+  try {
+    const res = await fetch('/api/oauth/redirect-uri');
+    if (res.ok) oauthRedirectUri.value = (await res.json()).redirectUri || '';
+  } catch { /* ignore */ }
+};
+
+// Inicia el flujo interactivo: abre un popup al proveedor y espera el postMessage del callback.
+const connectOAuth = () => {
+  if (!editingCredentialId.value) return;
+  oauthConnectError.value = '';
+  oauthConnecting.value = true;
+  const id = editingCredentialId.value;
+
+  const onMessage = (e: MessageEvent) => {
+    if (!e.data || e.data.source !== 'libreflow-oauth') return;
+    window.removeEventListener('message', onMessage);
+    oauthConnecting.value = false;
+    if (e.data.ok) {
+      oauthConnected.value = true;
+    } else {
+      oauthConnectError.value = e.data.detail || 'Error de conexión';
+    }
+  };
+  window.addEventListener('message', onMessage);
+
+  (async () => {
+    try {
+      const res = await fetch(`/api/credentials/${id}/oauth/authorize`, { method: 'POST' });
+      if (!res.ok) throw new Error((await res.json()).error || 'No se pudo iniciar OAuth');
+      const { url } = await res.json();
+      const popup = window.open(url, 'libreflow-oauth', 'width=620,height=720');
+      if (!popup) throw new Error('El navegador bloqueó el popup. Permítelo y reintenta.');
+    } catch (err: any) {
+      window.removeEventListener('message', onMessage);
+      oauthConnecting.value = false;
+      oauthConnectError.value = err.message;
+    }
+  })();
+};
 
 // Modal states
 const showSaveModal = ref(false);
@@ -1539,12 +1620,18 @@ const openCreateCredentialModal = () => {
   credKeyValue.value = '';
   credKeyIn.value = 'header';
   oauthGrantType.value = 'client_credentials';
+  oauthAuthUrl.value = '';
   oauthTokenUrl.value = '';
   oauthClientId.value = '';
   oauthClientSecret.value = '';
   oauthRefreshToken.value = '';
   oauthScope.value = '';
   oauthClientAuth.value = 'header';
+  oauthUsePkce.value = true;
+  oauthOfflineAccess.value = true;
+  oauthConnected.value = false;
+  oauthConnectError.value = '';
+  fetchOAuthRedirectUri();
   showCredentialModal.value = true;
 };
 
@@ -1569,12 +1656,18 @@ const openEditCredentialModal = async (id: string) => {
         credKeyIn.value = data.in || 'header';
       } else if (cred.type === 'oauth2') {
         oauthGrantType.value = data.grantType || 'client_credentials';
+        oauthAuthUrl.value = data.authUrl || '';
         oauthTokenUrl.value = data.tokenUrl || '';
         oauthClientId.value = data.clientId || '';
         oauthClientSecret.value = data.clientSecret || '';
         oauthRefreshToken.value = data.refreshToken || '';
         oauthScope.value = data.scope || '';
         oauthClientAuth.value = data.clientAuth || 'header';
+        oauthUsePkce.value = data.usePkce !== false;
+        oauthOfflineAccess.value = data.offlineAccess !== false;
+        oauthConnected.value = !!cred.connected; // flag derivado del backend (no expone token)
+        oauthConnectError.value = '';
+        fetchOAuthRedirectUri();
       }
       showCredentialModal.value = true;
     }
@@ -1602,6 +1695,11 @@ const saveCredentialToDb = async () => {
     data.clientAuth = oauthClientAuth.value;
     if (oauthScope.value.trim()) data.scope = oauthScope.value.trim();
     if (oauthGrantType.value === 'refresh_token') data.refreshToken = oauthRefreshToken.value;
+    if (oauthGrantType.value === 'authorization_code') {
+      data.authUrl = oauthAuthUrl.value.trim();
+      data.usePkce = oauthUsePkce.value;
+      data.offlineAccess = oauthOfflineAccess.value;
+    }
   }
 
   const payload = {
@@ -1619,8 +1717,14 @@ const saveCredentialToDb = async () => {
     });
 
     if (res.ok) {
-      showCredentialModal.value = false;
       await fetchCredentials();
+      // OAuth2 interactivo: mantén el modal abierto tras guardar para poder "Conectar"
+      // (el botón necesita un id ya persistido).
+      if (credentialType.value === 'oauth2' && oauthGrantType.value === 'authorization_code') {
+        editingCredentialId.value = id;
+      } else {
+        showCredentialModal.value = false;
+      }
     }
   } catch (err) {
     console.error('Error saving credential:', err);

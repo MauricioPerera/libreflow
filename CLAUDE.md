@@ -36,7 +36,11 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   whose toolset is an MCP server — own (in-process) or external (SDK client). Shared
   credential→auth helper (`resolveCredentialAuth`) used by httpRequest / mcpToolCall / aiAgent;
   schemes: basicAuth, apiKey, and **oauth2** (`oauth2.ts`: server-to-server client_credentials /
-  refresh_token, auto token fetch/refresh, in-memory + encrypted-credential token cache).
+  refresh_token **plus interactive authorization_code + PKCE**, auto token fetch/refresh,
+  in-memory + encrypted-credential token cache). Interactive flow: `buildAuthorizationUrl` /
+  `handleOAuthCallback` (single-use `state` store) wired in server.ts as authenticated
+  `POST /api/credentials/:id/oauth/authorize` + public `GET /oauth/callback` (popup →
+  postMessage). `redirect_uri` derives from `LF_PUBLIC_URL`.
 - **executor.ts** — `executeWorkflowAndRecord`: persists a `running` record, runs, saves the
   final report, triggers the error-workflow, prunes old executions (throttled, every Nth run).
   Serializes concurrent runs of the same workflow id (per-id promise chain), and exports an
