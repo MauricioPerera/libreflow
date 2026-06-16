@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
+import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns, credentialTypeLabel } from './utils';
 
 describe('statusLabel', () => {
   it('traduce los estados conocidos y deja pasar los desconocidos', () => {
@@ -8,6 +8,15 @@ describe('statusLabel', () => {
     expect(statusLabel('running')).toBe('En curso');
     expect(statusLabel('waiting')).toBe('En espera');
     expect(statusLabel('otro')).toBe('otro');
+  });
+});
+
+describe('credentialTypeLabel', () => {
+  it('etiqueta los tipos conocidos; desconocido cae a API Key', () => {
+    expect(credentialTypeLabel('basicAuth')).toContain('Basic Auth');
+    expect(credentialTypeLabel('oauth2')).toContain('OAuth2');
+    expect(credentialTypeLabel('apiKey')).toContain('API Key');
+    expect(credentialTypeLabel('desconocido')).toContain('API Key');
   });
 });
 
