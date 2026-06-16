@@ -152,63 +152,14 @@
         </div>
 
         <!-- Tables List -->
-        <div v-else>
-          <div class="subview-header">
-            <div>
-              <h2 class="subview-title">Tablas de Datos (Data Tables)</h2>
-              <p class="subview-desc">Crea y administra tablas estructuradas para almacenar registros de tus automatizaciones.</p>
-            </div>
-            <button @click="openCreateTableModal" class="btn btn-primary">
-              + Crear Tabla
-            </button>
-          </div>
-
-          <div class="table-container">
-            <table class="dashboard-table">
-              <thead>
-                <tr>
-                  <th>Nombre de la Tabla</th>
-                  <th>ID</th>
-                  <th>Columnas</th>
-                  <th>Creada el</th>
-                  <th style="text-align: right;">Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="table in dataTablesList" :key="table.id">
-                  <td class="flow-name-cell" @click="loadTableDetails(table)">
-                    📊 {{ table.name }}
-                  </td>
-                  <td class="code-font">{{ table.id }}</td>
-                  <td>
-                    <span v-for="col in parseJsonColumns(table.columns)" :key="col.name" class="status-badge" style="margin-right: 4px; background: hsla(var(--color-primary) / 0.1); color: hsl(var(--color-primary-text)); padding: 2px 6px; font-size: 12px;">
-                      {{ col.name }} ({{ col.type }})
-                    </span>
-                  </td>
-                  <td>{{ formatFullDate(table.created_at) }}</td>
-                  <td style="text-align: right;">
-                    <div class="table-actions">
-                      <button @click="loadTableDetails(table)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">
-                        Ver Datos
-                      </button>
-                      <button @click="deleteTableFromDb(table.id)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px; border-color: hsla(var(--color-danger) / 0.3); color: hsl(var(--color-danger));">
-                        Eliminar
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-                <tr v-if="!dashboardLoaded">
-                  <td colspan="5" class="empty-table-message">Cargando tablas…</td>
-                </tr>
-                <tr v-else-if="dataTablesList.length === 0">
-                  <td colspan="5" class="empty-table-message">
-                    No tienes tablas de datos creadas. Haz clic en "+ Crear Tabla" para empezar.
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <DataTablesList
+          v-else
+          :tables="dataTablesList"
+          :loaded="dashboardLoaded"
+          @create="openCreateTableModal"
+          @select="loadTableDetails"
+          @delete="deleteTableFromDb"
+        />
       </div>
 
       <!-- MCP SERVERS SUBVIEW -->
@@ -1035,6 +986,7 @@ import CustomNode from './components/CustomNode.vue';
 import CredentialsView from './components/CredentialsView.vue';
 import FlowsView from './components/FlowsView.vue';
 import ExecutionsView from './components/ExecutionsView.vue';
+import DataTablesList from './components/DataTablesList.vue';
 import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
 // Screen Routing states
