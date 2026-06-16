@@ -9,6 +9,9 @@
         <button @click="emit('validate')" class="btn btn-secondary">
           🔍 Validar coherencia
         </button>
+        <button @click="emit('import')" class="btn btn-secondary">
+          ⬆️ Importar
+        </button>
         <button @click="emit('create')" class="btn btn-primary">
           + Crear Flujo
         </button>
@@ -43,6 +46,9 @@
                 <button @click="emit('edit', flow.id)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">
                   Editar
                 </button>
+                <button @click="emit('export', flow.id)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" title="Descargar el flujo como JSON">
+                  Exportar
+                </button>
                 <button @click="emit('delete', flow.id)" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px; border-color: hsla(var(--color-danger) / 0.3); color: hsl(var(--color-danger));">
                   Eliminar
                 </button>
@@ -74,6 +80,8 @@ defineProps<{
 const emit = defineEmits<{
   (e: 'validate'): void;
   (e: 'create'): void;
+  (e: 'import'): void;
+  (e: 'export', id: string): void;
   (e: 'edit', id: string): void;
   (e: 'delete', id: string): void;
 }>();

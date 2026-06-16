@@ -21,17 +21,25 @@ describe('FlowsView', () => {
     expect(mount(FlowsView, { props: { workflows: [], loaded: true } }).text()).toContain('No tienes flujos');
   });
 
-  it('emite validate / create / edit / delete', async () => {
+  it('emite validate / create / edit / export / delete', async () => {
     const w = mount(FlowsView, { props: { workflows: flows, loaded: true } });
     await w.find('.btn-secondary').trigger('click'); // Validar coherencia (1er secondary del header)
     expect(w.emitted('validate')).toBeTruthy();
     await w.find('.btn-primary').trigger('click');
     expect(w.emitted('create')).toBeTruthy();
 
-    const rowButtons = w.findAll('tbody .table-actions .btn');
+    const rowButtons = w.findAll('tbody .table-actions .btn'); // [Editar, Exportar, Eliminar]
     await rowButtons[0].trigger('click');
     expect(w.emitted('edit')![0]).toEqual(['w1']);
     await rowButtons[1].trigger('click');
+    expect(w.emitted('export')![0]).toEqual(['w1']);
+    await rowButtons[2].trigger('click');
     expect(w.emitted('delete')![0]).toEqual(['w1']);
+  });
+
+  it('el botón Importar de la cabecera emite import', async () => {
+    const w = mount(FlowsView, { props: { workflows: flows, loaded: true } });
+    await w.findAll('button').find((b) => b.text().includes('Importar'))!.trigger('click');
+    expect(w.emitted('import')).toBeTruthy();
   });
 });
