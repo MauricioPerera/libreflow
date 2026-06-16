@@ -11,7 +11,7 @@ npm run dev            # backend :3000 + frontend :5173 (concurrently)
 npm run dev:backend    # backend only (tsx watch)
 npm run dev:frontend   # frontend only (vite)
 npm run build          # backend tsc + frontend vue-tsc && vite build
-npm test               # backend vitest suite (run from repo; delegates to backend)
+npm test               # backend vitest + frontend vitest (test:backend / test:frontend for one)
 ```
 
 Verify changes with `npm test` (backend) and `npm run build` (both). To exercise the
@@ -143,8 +143,14 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
   an optional API/substring filter and lists per-flow issues (click a flow → open it).
 - **components/** — `CustomNode`, `NodeConfigPanel` (param form, inline JSON/cron validation),
   `ExpressionEditor`, `JsonTreeItem`.
+- **utils.ts** — pure helpers extracted from `App.vue` (no reactive state): `statusLabel`,
+  `formatFullDate`, `setNestedValue` (prototype-pollution-guarded), `parseJsonColumns`,
+  `coerceRowByColumns`. Unit-tested (`utils.test.ts`) — the start of breaking up the monolith.
 - **focusTrap.ts** — global `v-focus-trap` directive for modals (Esc + click-outside + ARIA
   are also wired).
+- **Frontend tests** — `vitest` + `@vue/test-utils` + jsdom (`frontend/vitest.config.ts`).
+  `utils.test.ts` covers the extracted helpers; `components/JsonTreeItem.test.ts` is a SFC
+  mount smoke test. Run via `npm run test -w frontend` (included in root `npm test`).
 
 ## Conventions
 
