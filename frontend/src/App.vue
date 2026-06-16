@@ -1152,8 +1152,7 @@ const importWorkflow = () => {
 // CREDENTIALS CRUD LOGIC
 const fetchCredentials = async () => {
   try {
-    const res = await fetch('/api/credentials');
-    credentialsList.value = await res.json();
+    credentialsList.value = await apiGetJson('/api/credentials');
   } catch (err) {
     console.error('Error fetching credentials:', err);
   }
@@ -1383,8 +1382,7 @@ const runWorkflow = async (rerunFrom?: string) => {
 
 const fetchNodeTypes = async () => {
   try {
-    const res = await fetch('/api/node-types');
-    nodeTypesList.value = await res.json();
+    nodeTypesList.value = await apiGetJson('/api/node-types');
   } catch (err) {
     console.error('Error fetching node types:', err);
   }
@@ -1392,10 +1390,7 @@ const fetchNodeTypes = async () => {
 
 const fetchDataTables = async () => {
   try {
-    const res = await fetch('/api/data-tables');
-    if (res.ok) {
-      dataTablesList.value = await res.json();
-    }
+    dataTablesList.value = await apiGetJson('/api/data-tables');
   } catch (err) {
     console.error('Error fetching data tables:', err);
   }
@@ -1404,8 +1399,7 @@ const fetchDataTables = async () => {
 // MCP SERVERS CRUD LOGIC
 const fetchMcpServers = async () => {
   try {
-    const res = await fetch('/api/mcp-servers');
-    if (res.ok) mcpServersList.value = await res.json();
+    mcpServersList.value = await apiGetJson('/api/mcp-servers');
   } catch (err) {
     console.error('Error fetching MCP servers:', err);
   }
@@ -1557,10 +1551,7 @@ const loadTableDetails = async (table: any) => {
 const fetchSelectedTableRows = async () => {
   if (!selectedTable.value) return;
   try {
-    const res = await fetch(`/api/data-tables/${selectedTable.value.id}/rows`);
-    if (res.ok) {
-      selectedTableRows.value = await res.json();
-    }
+    selectedTableRows.value = await apiGetJson(`/api/data-tables/${selectedTable.value.id}/rows`);
   } catch (err) {
     console.error('Error fetching table rows:', err);
   }
@@ -1777,8 +1768,7 @@ const loadSampleWorkflow = () => {
 const fetchWorkflowVersions = async (workflowId: string | null) => {
   if (!workflowId) return;
   try {
-    const res = await fetch(`/api/workflows/${workflowId}/versions`);
-    workflowVersionsList.value = await res.json();
+    workflowVersionsList.value = await apiGetJson(`/api/workflows/${workflowId}/versions`);
   } catch (err) {
     console.error('Error fetching workflow versions:', err);
   }
