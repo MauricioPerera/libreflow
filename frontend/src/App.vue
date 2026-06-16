@@ -679,43 +679,13 @@
     </div>
 
     <!-- Add/Edit Row Modal -->
-    <div v-if="showRowModal && selectedTable" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
-      <div class="modal-content" style="width: 460px; max-width: 90%;">
-        <h3 class="modal-title">Añadir Fila</h3>
-        <p class="modal-desc">Ingresa los datos para la nueva fila en la tabla.</p>
-
-        <div v-for="col in selectedTable.columns" :key="col.name" class="form-group" style="margin-top: 12px;">
-          <label class="config-label">{{ col.name }} <span style="font-size: 12px; opacity: 0.6;">({{ col.type }})</span></label>
-          <input 
-            v-if="col.type === 'number'"
-            v-model.number="rowFormData[col.name]"
-            type="number"
-            class="config-input"
-          />
-          <div v-else-if="col.type === 'boolean'" style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
-            <input 
-              v-model="rowFormData[col.name]"
-              type="checkbox"
-              style="width: 16px; height: 16px;"
-            />
-            <span style="font-size: 13px; color: hsl(var(--text-primary));">Activo/Verdadero</span>
-          </div>
-          <input 
-            v-else
-            v-model="rowFormData[col.name]"
-            type="text"
-            class="config-input"
-          />
-        </div>
-
-        <div class="modal-actions" style="margin-top: 24px;">
-          <button @click="showRowModal = false" class="btn btn-secondary">Cancelar</button>
-          <button @click="addRowToSelectedTable" class="btn btn-primary">
-            Guardar
-          </button>
-        </div>
-      </div>
-    </div>
+    <AddRowModal
+      v-if="showRowModal && selectedTable"
+      :columns="selectedTable.columns"
+      :row-data="rowFormData"
+      @close="showRowModal = false"
+      @save="addRowToSelectedTable"
+    />
 
     <!-- Create/Edit MCP Server Modal -->
     <div v-if="showMcpServerModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
@@ -857,6 +827,7 @@ import ExecutionsView from './components/ExecutionsView.vue';
 import DataTablesList from './components/DataTablesList.vue';
 import DataTableDetail from './components/DataTableDetail.vue';
 import SaveWorkflowModal from './components/SaveWorkflowModal.vue';
+import AddRowModal from './components/AddRowModal.vue';
 import McpServersView from './components/McpServersView.vue';
 import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
