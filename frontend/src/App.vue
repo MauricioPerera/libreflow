@@ -522,6 +522,28 @@
 
       <!-- Vue Flow Canvas -->
       <section class="canvas-container">
+        <!-- Validador de coherencia: resultado del último guardado -->
+        <div v-if="showValidationBanner && validationIssues.length" class="validation-banner" role="status">
+          <div class="validation-banner-head">
+            <strong>
+              {{ validationErrorCount > 0 ? '⚠️ Problemas de coherencia' : 'ℹ️ Avisos de coherencia' }}
+              ({{ validationErrorCount }} error{{ validationErrorCount === 1 ? '' : 'es' }},
+              {{ validationIssues.length - validationErrorCount }} aviso{{ (validationIssues.length - validationErrorCount) === 1 ? '' : 's' }})
+            </strong>
+            <button class="validation-banner-close" @click="showValidationBanner = false" aria-label="Cerrar">✕</button>
+          </div>
+          <ul class="validation-banner-list">
+            <li
+              v-for="(issue, i) in validationIssues"
+              :key="i"
+              :class="['validation-issue', issue.level, { clickable: !!issue.nodeId }]"
+              @click="issue.nodeId && focusIssueNode(issue.nodeId)"
+            >
+              <span class="validation-dot" :class="issue.level"></span>
+              {{ issue.message }}
+            </li>
+          </ul>
+        </div>
         <VueFlow
           v-model:nodes="nodes"
           v-model:edges="edges"
@@ -1398,6 +1420,21 @@ const onPaneClick = () => {
   selectedNode.value = null;
 };
 
+// --- Validador de coherencia (resultado del guardado) ---
+interface FlowIssue { level: 'error' | 'warning'; code: string; nodeId?: string; nodeName?: string; message: string }
+const validationIssues = ref<FlowIssue[]>([]);
+const showValidationBanner = ref(false);
+const validationErrorCount = computed(() => validationIssues.value.filter(i => i.level === 'error').length);
+
+// Selecciona en el canvas el nodo señalado por un issue (abre su panel de configuración).
+const focusIssueNode = (nodeId: string) => {
+  const node = nodes.value.find(n => n.id === nodeId);
+  if (node) {
+    selectedNode.value = node;
+    activeTab.value = 'config';
+  }
+};
+
 const updateNodeParams = (params: any) => {
   if (selectedNode.value) {
     selectedNode.value.data.parameters = params;
@@ -1861,6 +1898,12 @@ const saveWorkflowToDb = async () => {
       activeWorkflowName.value = name;
       showSaveModal.value = false;
       isDirty.value = false; // saved — no unsaved changes
+      // Surface the (non-blocking) coherence validation returned by the save.
+      try {
+        const data = await res.json();
+        validationIssues.value = data?.validation?.issues || [];
+        showValidationBanner.value = validationIssues.value.length > 0;
+      } catch { validationIssues.value = []; showValidationBanner.value = false; }
       await fetchSavedWorkflows();
       await fetchWorkflowExecutions(id);
       await fetchWorkflowVersions(id);
