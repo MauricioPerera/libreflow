@@ -31,6 +31,13 @@ with an Express + SQLite backend and a Vue 3 + Vue Flow frontend.
   (operators + sort + limit), and **reactive triggers** (run a flow on row insert/update).
 - **Streaming triggers** — persistent long-running connections (SSE, WebSocket, MQTT, IMAP)
   that fire a flow per inbound message, with automatic exponential-backoff reconnect.
+- **Durable execution** — a `wait` node suspends the run and returns a resume token; continue
+  later via `POST /hooks/resume/:token`. The engine replays the already-run nodes from cached
+  outputs (no double side-effects) and resumes from the wait node.
+- **Granular debugging** — **pin** a node's output so manual runs reuse it instead of
+  re-executing (skip expensive/external calls while iterating), and **re-run from a node**
+  (reuses cached upstream outputs, re-runs only that node and its descendants). Pins apply to
+  manual runs only, never in production.
 - **Binary files** — `httpRequest` can download to / upload from a binary store; node outputs
   carry a lightweight reference (`_lfBinary`) instead of inline bytes, downloadable via
   `/api/binaries/:id`. Capped by `LF_MAX_BINARY_MB`.
@@ -86,7 +93,7 @@ Open http://localhost:5173. The backend creates `backend/database.sqlite` on fir
 
 ```bash
 npm run build               # backend (tsc) + frontend (vue-tsc && vite build)
-npm test                    # backend test suite (vitest)
+npm test                    # backend (vitest) + frontend (vitest + @vue/test-utils + jsdom)
 ```
 
 ## Deploy with Docker (single container)
@@ -126,8 +133,15 @@ All under `/api` (require `x-api-key` when `LF_API_KEY` is set):
 - `POST /api/workflows/validate-batch` — validate many saved flows at once; filter by `{ ids }`
   or `{ contains }` (graph substring, e.g. an API host) for "fix all flows tied to one API"
 - `GET  /api/executions/:id/llm-context` — pre-armed LLM prompt + context for a failed run
-- `GET|POST|DELETE /api/workflows[/:id]` — workflow CRUD (+ `/:id/active`, `/:id/versions`)
+- `GET|POST|DELETE /api/workflows[/:id]` — workflow CRUD (+ `/:id/active`, `/:id/versions`,
+  `/:id/versions/:version`, `/:id/versions/:version/restore`)
+- `GET /api/workflows/:id/export` / `POST /api/workflows/import` — export/import a flow as
+  portable JSON (no id/secrets; import creates a new flow)
 - `GET /api/executions[/:id]`, `GET /api/workflows/:id/executions` — run history
+- `GET /api/binaries/:id` — download a binary-store object (referenced by `_lfBinary` in outputs)
+- `POST /hooks/resume/:token` — resume a suspended (`wait`) run; the POST body becomes the wait output
+- OAuth2 interactive: `POST /api/credentials/:id/oauth/authorize` (start) + public
+  `GET /oauth/callback` (provider redirect) + `GET /api/oauth/redirect-uri` (URI to register)
 - `GET|POST|DELETE /api/mcp-servers[/:id]` — named MCP servers (curated workflow groups)
 - `GET|POST|DELETE /api/credentials[/:id]`, `GET|POST|DELETE /api/data-tables[/:id]` (+ `/rows`)
 - `*  /hooks/:workflowId` — webhook trigger (HMAC-verified when `LF_WEBHOOK_SECRET` is set).
@@ -151,8 +165,9 @@ Workflow shape: `nodes[] = {id,type,name,parameters}`, `connections[] =
   `require`/`process`/`fs`/network), with bounded memory and time. Safe in production; no
   opt-in flag. Tune limits globally with `LF_JS_TIMEOUT_MS` (default 5000) and
   `LF_JS_MEMORY_MB` (default 128), or per node via the `jsTimeoutMs` / `jsMemoryMb` params.
-- Outbound requests (httpRequest / MCP / aiAgent LLM) are SSRF-guarded; private IPs blocked
-  in production.
+- Outbound requests (httpRequest / oauth2 / SSE trigger) go through `safeFetch`, which blocks
+  private/loopback/metadata IPs in production **and re-validates every redirect hop** (so a
+  public host can't 30x-redirect into your network). Response bodies are read with a memory cap.
 - Credentials are encrypted at rest (AES-256-GCM); the API never returns decrypted secrets.
   Types: `basicAuth`, `apiKey`, and `oauth2` — server-to-server (`client_credentials` /
   `refresh_token`) **and interactive `authorization_code` + PKCE** (browser consent via a
