@@ -86,7 +86,7 @@ export async function executeNode(
   node: WorkflowNode,
   context: ExecutionContext,
   incomingInputs?: Record<string, any>,
-  execMeta?: { depth?: number; stack?: string[] },
+  execMeta?: { depth?: number; stack?: string[]; executionId?: string },
   paramOverrides?: Record<string, any>
 ): Promise<any> {
   const effectiveParams = paramOverrides

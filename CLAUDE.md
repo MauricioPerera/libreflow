@@ -49,7 +49,13 @@ running app, use the run skill: `node .claude/skills/run-libreflow/driver.mjs`.
 - **db.ts** — SQLite access. `PRAGMA foreign_keys = ON`, `busy_timeout`, `journal_mode = WAL`;
   `saveWorkflow` + version are atomic (BEGIN/COMMIT); indexes on hot columns; idempotent column
   migrations. Tables: workflows, executions, credentials, workflow_versions, data_tables,
-  data_table_rows, **mcp_servers**. **Data-table state engine**: optional unique key column
+  data_table_rows, **mcp_servers**, **binaries**. **Binary store** (`binary.ts` + db helpers
+  `saveBinary`/`getBinary`): bytes live in the `binaries` BLOB table, NOT inline in the
+  execution JSON; node outputs carry a `{_lfBinary,fileName,mimeType,size}` reference. Tied to
+  `execution_id` (no FK; cleaned in `pruneOldExecutions` + a NULL-orphan TTL sweep). The
+  `executionId` reaches nodes via `execMeta`. Capped by `LF_MAX_BINARY_MB`; downloaded via
+  `GET /api/binaries/:id`. `httpRequest` does `responseFormat: binary` (download) and
+  `bodyType: binary` (upload). **Data-table state engine**: optional unique key column
   (`key_column` + derived `row_key`) enabling atomic `upsert` / `increment` / get-or-default,
   rich `queryDataTableRows` (operators eq/ne/gt/lt/gte/lte/contains/in via `json_extract`),
   and a transactional batch insert (`addDataTableRows`).

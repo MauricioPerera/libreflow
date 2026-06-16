@@ -147,7 +147,7 @@ export class WorkflowEngine {
   async execute(
     workflow: Workflow,
     initialPayload: Record<string, any> = {},
-    execMeta: { depth?: number; stack?: string[] } = {},
+    execMeta: { depth?: number; stack?: string[]; executionId?: string } = {},
     resume?: ResumeState
   ): Promise<WorkflowExecutionReport> {
     const genToken = () => 'rsm-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -159,6 +159,7 @@ export class WorkflowEngine {
     const execDepth = execMeta.depth ?? 0;
     const wfId = (workflow as any).id;
     const execStack = execMeta.stack ?? (wfId ? [wfId] : []);
+    const execExecutionId = execMeta.executionId;
 
     // --- Build helper maps ---
     const nodeMap = new Map<string, WorkflowNode>();
@@ -260,7 +261,7 @@ export class WorkflowEngine {
             node,
             context,
             incomingInputs,
-            { depth: execDepth, stack: execStack },
+            { depth: execDepth, stack: execStack, executionId: execExecutionId },
             nodeParamOverrides.get(node.id)
           );
           ok = true;

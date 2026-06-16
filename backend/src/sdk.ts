@@ -26,6 +26,6 @@ export interface LibreFlowNodeDefinition {
     parameters: any,
     context: any,
     incomingInputs?: any,
-    execMeta?: { depth?: number; stack?: string[] }
+    execMeta?: { depth?: number; stack?: string[]; executionId?: string }
   ) => Promise<any> | any;
 }

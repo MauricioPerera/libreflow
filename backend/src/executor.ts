@@ -76,7 +76,7 @@ async function runWorkflowAndRecord(
   }
 
   const engine = new WorkflowEngine();
-  const report = await engine.execute(workflow, payload);
+  const report = await engine.execute(workflow, payload, { executionId });
 
   // A `wait` node suspended the run: persist it as 'waiting' + a pending-resume record,
   // and stop here. POST /hooks/resume/:token continues it later.
@@ -143,7 +143,7 @@ export async function resumeWorkflowAndRecord(
 
   const { workflow, priorResults, initialPayload } = pending.state;
   const engine = new WorkflowEngine();
-  const report = await engine.execute(workflow, initialPayload || {}, {}, {
+  const report = await engine.execute(workflow, initialPayload || {}, { executionId: pending.execution_id }, {
     waitNodeId: pending.wait_node_id,
     resumePayload,
     priorResults,
