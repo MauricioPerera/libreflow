@@ -646,60 +646,15 @@
     />
 
     <!-- BATCH VALIDATION MODAL -->
-    <div v-if="showBatchValidateModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
-      <div class="modal-content" style="width: 680px; max-width: 95%;">
-        <h3 class="modal-title">🔍 Validar coherencia de flujos</h3>
-        <p class="modal-desc">Valida los flujos guardados en lote. Deja el filtro vacío para validar todos, o escribe un host/cadena (p.ej. <code>api.stripe.com</code>) para validar solo los que lo usan.</p>
-        <div style="display: flex; gap: 10px; align-items: center;">
-          <input
-            v-model="batchContains"
-            type="text"
-            placeholder="Filtrar por API/cadena (vacío = todos)"
-            style="flex: 1; padding: 10px 12px; border-radius: 8px;"
-            @keyup.enter="runBatchValidate"
-          />
-          <button @click="runBatchValidate" class="btn btn-primary" :disabled="batchValidating">
-            {{ batchValidating ? 'Validando…' : 'Validar' }}
-          </button>
-        </div>
-
-        <div v-if="batchResult" style="margin-top: 16px;">
-          <p class="modal-desc" style="margin-bottom: 10px;">
-            {{ batchResult.summary.total }} flujo(s) ·
-            <span :style="{ color: batchResult.summary.withErrors ? 'hsl(var(--color-danger))' : 'inherit' }">{{ batchResult.summary.withErrors }} con errores</span> ·
-            {{ batchResult.summary.withWarnings }} con avisos
-          </p>
-          <div style="max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
-            <div
-              v-for="wf in batchResult.workflows"
-              :key="wf.id"
-              v-show="wf.issues.length"
-              class="validation-banner"
-              style="position: static; width: auto; transform: none; box-shadow: none;"
-            >
-              <div class="validation-banner-head">
-                <strong style="cursor: pointer;" @click="loadWorkflowForEdit(wf.id); closeAllModals();">
-                  {{ wf.ok ? 'ℹ️' : '⚠️' }} {{ wf.name }}
-                  <span style="font-weight: 400; opacity: 0.7;">({{ wf.errors }}e / {{ wf.warnings }}a)</span>
-                </strong>
-              </div>
-              <ul class="validation-banner-list">
-                <li v-for="(issue, i) in wf.issues" :key="i" :class="['validation-issue', issue.level]">
-                  <span class="validation-dot" :class="issue.level"></span>{{ issue.message }}
-                </li>
-              </ul>
-            </div>
-            <p v-if="batchResult.summary.withErrors === 0 && batchResult.summary.withWarnings === 0" class="empty-table-message">
-              ✓ Todos los flujos validados son coherentes.
-            </p>
-          </div>
-        </div>
-
-        <div class="modal-actions" style="margin-top: 16px;">
-          <button @click="closeAllModals()" class="btn btn-secondary">Cerrar</button>
-        </div>
-      </div>
-    </div>
+    <BatchValidateModal
+      v-if="showBatchValidateModal"
+      v-model:contains="batchContains"
+      :validating="batchValidating"
+      :result="batchResult"
+      @validate="runBatchValidate"
+      @open-flow="(id) => { loadWorkflowForEdit(id); closeAllModals(); }"
+      @close="closeAllModals"
+    />
 
     <!-- AI ERROR CONTEXT MODAL -->
     <div v-if="showAiContextModal" class="modal-overlay" role="dialog" aria-modal="true" v-focus-trap @click.self="closeAllModals()">
@@ -742,6 +697,7 @@ import SaveWorkflowModal from './components/SaveWorkflowModal.vue';
 import AddRowModal from './components/AddRowModal.vue';
 import DataTableModal from './components/DataTableModal.vue';
 import McpServerModal from './components/McpServerModal.vue';
+import BatchValidateModal from './components/BatchValidateModal.vue';
 import McpServersView from './components/McpServersView.vue';
 import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
