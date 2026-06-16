@@ -32,7 +32,8 @@ import {
   getMcpServers,
   getMcpServerById,
   saveMcpServer,
-  deleteMcpServer
+  deleteMcpServer,
+  getBinary
 } from './db.js';
 import { triggerManager } from './triggerManager.js';
 import { NodeRegistry } from './registry.js';
@@ -388,6 +389,21 @@ app.delete('/api/credentials/:id', async (req, res) => {
   try {
     await deleteCredential(req.params.id);
     return res.json({ success: true, message: 'Credential deleted successfully' });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+// Descarga de un binario del store por su id (referenciado desde la salida de un nodo).
+app.get('/api/binaries/:id', async (req, res) => {
+  try {
+    const bin = await getBinary(req.params.id);
+    if (!bin) return res.status(404).json({ error: 'Binary not found' });
+    if (bin.mime_type) res.set('Content-Type', bin.mime_type);
+    res.set('Content-Length', String(bin.size));
+    const safeName = (bin.file_name || bin.id).replace(/[^\w.\-]+/g, '_');
+    res.set('Content-Disposition', `attachment; filename="${safeName}"`);
+    return res.send(bin.data);
   } catch (err: any) {
     return serverError(res, err);
   }

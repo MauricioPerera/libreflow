@@ -1,6 +1,7 @@
 import { LibreFlowNodeDefinition } from './sdk.js';
 import { WorkflowSuspendError } from './engine.js';
-import { getCredentialById, getWorkflowById } from './db.js';
+import { getCredentialById, getWorkflowById, getBinary } from './db.js';
+import { storeBinary, isBinaryRef, fileNameFromUrl } from './binary.js';
 import ivm from 'isolated-vm';
 import { executeMcpToolCall } from './mcp.js';
 import { assertSafeUrl, isUnsafeKey } from './security.js';
@@ -274,17 +275,42 @@ const httpRequestNode: LibreFlowNodeDefinition = {
       label: 'Cuerpo (Body)',
       type: 'code',
       default: ''
+    },
+    {
+      name: 'bodyType',
+      label: 'Tipo de cuerpo',
+      type: 'options',
+      default: 'auto',
+      options: [
+        { label: 'Automático (JSON / texto)', value: 'auto' },
+        { label: 'Binario (subir fichero)', value: 'binary' }
+      ]
+    },
+    {
+      name: 'responseFormat',
+      label: 'Formato de respuesta',
+      type: 'options',
+      default: 'auto',
+      options: [
+        { label: 'Automático (JSON / texto)', value: 'auto' },
+        { label: 'JSON', value: 'json' },
+        { label: 'Texto', value: 'text' },
+        { label: 'Binario (descargar fichero)', value: 'binary' }
+      ]
     }
   ],
-  execute: async (params) => {
-    const { 
-      url, 
-      method = 'GET', 
-      headers = [], 
+  execute: async (params, _context, _inputs, execMeta) => {
+    const {
+      url,
+      method = 'GET',
+      headers = [],
       body,
+      bodyType = 'auto',
+      responseFormat = 'auto',
       authentication = 'none',
       credentialId
     } = params;
+    const executionId = execMeta?.executionId ?? null;
 
     if (!url) {
       throw new Error('HTTP Request Node error: URL is required');
@@ -314,25 +340,51 @@ const httpRequestNode: LibreFlowNodeDefinition = {
     };
 
     if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase()) && body) {
-      fetchOptions.body = typeof body === 'object' ? JSON.stringify(body) : String(body);
-      if (!headerObj['Content-Type']) {
-        headerObj['Content-Type'] = 'application/json';
+      if (bodyType === 'binary') {
+        // Sube un fichero: `body` debe resolver a una referencia de binario; cargamos los
+        // bytes del store y los enviamos como cuerpo crudo.
+        if (!isBinaryRef(body)) {
+          throw new Error('HTTP Request: bodyType=binary requiere que el cuerpo sea una referencia de binario (ej. {{ $node.X.output.body }}).');
+        }
+        const bin = await getBinary(body._lfBinary);
+        if (!bin) throw new Error(`HTTP Request: binario "${body._lfBinary}" no encontrado.`);
+        fetchOptions.body = new Uint8Array(bin.data);
+        if (!headerObj['Content-Type'] && (body.mimeType || bin.mime_type)) {
+          headerObj['Content-Type'] = body.mimeType || bin.mime_type!;
+        }
+      } else {
+        fetchOptions.body = typeof body === 'object' ? JSON.stringify(body) : String(body);
+        if (!headerObj['Content-Type']) {
+          headerObj['Content-Type'] = 'application/json';
+        }
       }
     }
 
     const response = await fetch(requestUrl, fetchOptions);
-    const text = await response.text();
-    let responseBody: any;
-    try {
-      responseBody = JSON.parse(text);
-    } catch {
-      responseBody = text;
-    }
 
     const resHeaders: Record<string, string> = {};
     response.headers.forEach((value, key) => {
       resHeaders[key] = value;
     });
+
+    let responseBody: any;
+    if (responseFormat === 'binary') {
+      // Descarga: guarda los bytes en el store y devuelve una referencia ligera.
+      const buf = Buffer.from(await response.arrayBuffer());
+      const fileName = fileNameFromUrl(requestUrl);
+      const mimeType = resHeaders['content-type']?.split(';')[0]?.trim();
+      responseBody = await storeBinary(buf, { executionId, fileName, mimeType });
+    } else {
+      const text = await response.text();
+      if (responseFormat === 'text') {
+        responseBody = text;
+      } else if (responseFormat === 'json') {
+        responseBody = JSON.parse(text);
+      } else {
+        // auto: intenta JSON, cae a texto.
+        try { responseBody = JSON.parse(text); } catch { responseBody = text; }
+      }
+    }
 
     return {
       status: response.status,

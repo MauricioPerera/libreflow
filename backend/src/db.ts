@@ -53,6 +53,23 @@ export async function initDatabase() {
     );
   `);
 
+  // Binary store: bytes that must NOT live inline in the execution JSON (which is persisted
+  // and feeds the agent/MCP surface). Node outputs carry a lightweight reference instead.
+  // `execution_id` is nullable (ad-hoc runs have no persisted execution) and intentionally
+  // has NO foreign key — cleanup is explicit in pruneOldExecutions + an orphan TTL sweep.
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS binaries (
+      id TEXT PRIMARY KEY,
+      execution_id TEXT,
+      file_name TEXT,
+      mime_type TEXT,
+      size INTEGER NOT NULL,
+      data BLOB NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_binaries_execution ON binaries(execution_id)');
+
   // Create credentials table
   await db.exec(`
     CREATE TABLE IF NOT EXISTS credentials (
@@ -259,6 +276,34 @@ export async function pruneOldExecutions(workflowId: string, keep = 200) {
        )`,
     [workflowId, workflowId, keep]
   );
+  // Drop binaries whose execution was pruned, plus orphans from ad-hoc runs (no execution)
+  // older than an hour. Keeps the blob store from growing unbounded.
+  await db.run(
+    `DELETE FROM binaries
+       WHERE (execution_id IS NOT NULL AND execution_id NOT IN (SELECT id FROM executions))
+          OR (execution_id IS NULL AND created_at < datetime('now', '-1 hour'))`
+  );
+}
+
+// ----- Binary store -----
+
+export async function saveBinary(
+  id: string,
+  executionId: string | null,
+  fileName: string | null,
+  mimeType: string | null,
+  data: Buffer
+): Promise<void> {
+  await db.run(
+    'INSERT INTO binaries (id, execution_id, file_name, mime_type, size, data) VALUES (?, ?, ?, ?, ?, ?)',
+    [id, executionId, fileName, mimeType, data.length, data]
+  );
+}
+
+/** Full binary incl. bytes (Buffer). Returns null if not found. */
+export async function getBinary(id: string): Promise<{ id: string; file_name: string | null; mime_type: string | null; size: number; data: Buffer } | null> {
+  const row = await db.get('SELECT id, file_name, mime_type, size, data FROM binaries WHERE id = ?', [id]);
+  return row || null;
 }
 
 export async function getExecutions(workflowId: string) {

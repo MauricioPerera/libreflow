@@ -18,6 +18,9 @@ with an Express + SQLite backend and a Vue 3 + Vue Flow frontend.
   flow on row insert/update).
 - **Streaming triggers** — persistent long-running connections (SSE, WebSocket, MQTT, IMAP)
   that fire a flow per inbound message, with automatic exponential-backoff reconnect.
+- **Binary files** — `httpRequest` can download to / upload from a binary store; node outputs
+  carry a lightweight reference (`_lfBinary`) instead of inline bytes, downloadable via
+  `/api/binaries/:id`. Capped by `LF_MAX_BINARY_MB`.
 
 ## Stack
 
