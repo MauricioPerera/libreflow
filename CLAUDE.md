@@ -58,7 +58,10 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   whose toolset is an MCP server — own (in-process) or external (SDK client). Optional
   **self-consistency**: `runs > 1` runs the agent N times in parallel (one shared toolset, a
   conversation per run) and merges the answers via `mergeAnswers` (`collections.ts`:
-  first/majority/mostSimilar), returning the consensus answer + an `agreement` ratio. Shared
+  first/majority/mostSimilar), returning the consensus answer + an `agreement` ratio.
+  Optional **skills**: `loadSkills` reads an external MCP server's **resources** (not tools) via
+  `loadSkillsFromSession` (`mcp.ts`) and injects them as a trusted-instructions system message —
+  e.g. a signed/governed skill registry (postal-skills) served over MCP. Shared
   credential→auth helper (`resolveCredentialAuth`) used by httpRequest / mcpToolCall / aiAgent;
   schemes: basicAuth, apiKey, and **oauth2** (`oauth2.ts`: server-to-server client_credentials /
   refresh_token **plus interactive authorization_code + PKCE**, auto token fetch/refresh,
