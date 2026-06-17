@@ -522,11 +522,14 @@ describe('MCP resources (data-tables como contexto, server global)', () => {
     expect(r.payload.result.capabilities.resources).toBeUndefined();
   });
 
-  it('resources/list devuelve las data-tables como recursos', async () => {
+  it('resources/list devuelve las data-tables y los flujos como recursos', async () => {
     const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 2, method: 'resources/list' }, globalScope as any);
     const res = r.payload.result.resources;
-    expect(res).toHaveLength(1);
-    expect(res[0]).toMatchObject({ uri: 'libreflow://datatable/table-1', name: 'Leads', mimeType: 'application/json' });
+    const uris = res.map((x: any) => x.uri);
+    expect(uris).toContain('libreflow://datatable/table-1');
+    expect(uris).toContain('libreflow://workflow/flow-1');
+    expect(res.find((x: any) => x.uri === 'libreflow://datatable/table-1')).toMatchObject({ name: 'Leads', mimeType: 'application/json' });
+    expect(res.find((x: any) => x.uri === 'libreflow://workflow/flow-1')).toMatchObject({ name: 'Flujo: My Custom Workflow!', mimeType: 'application/json' });
   });
 
   it('resources/list vacío cuando el scope no expone resources', async () => {
@@ -542,6 +545,21 @@ describe('MCP resources (data-tables como contexto, server global)', () => {
     const parsed = JSON.parse(c.text);
     expect(parsed).toMatchObject({ table: 'table-1', limit: 20 });
     expect(Array.isArray(parsed.rows)).toBe(true);
+  });
+
+  it('resources/read devuelve la definición de un flujo (nodos y conexiones)', async () => {
+    const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 4, method: 'resources/read', params: { uri: 'libreflow://workflow/flow-1' } }, globalScope as any);
+    const c = r.payload.result.contents[0];
+    expect(c.uri).toBe('libreflow://workflow/flow-1');
+    const parsed = JSON.parse(c.text);
+    expect(parsed).toMatchObject({ id: 'flow-1', name: 'My Custom Workflow!' });
+    expect(Array.isArray(parsed.nodes)).toBe(true);
+    expect(Array.isArray(parsed.connections)).toBe(true);
+  });
+
+  it('resources/read de un flujo inexistente -> error', async () => {
+    const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 4, method: 'resources/read', params: { uri: 'libreflow://workflow/no-existe' } }, globalScope as any);
+    expect(r.payload.error).toBeDefined();
   });
 
   it('resources/read con uri desconocida -> error', async () => {

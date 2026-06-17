@@ -683,13 +683,21 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
     if (method === 'resources/list') {
       if (!scope.exposeResources) return { status: 200, payload: { jsonrpc: '2.0', id, result: { resources: [] } } };
       const tables = await getDataTables();
-      const resources = (tables || []).map((t: any) => ({
+      const tableResources = (tables || []).map((t: any) => ({
         uri: `libreflow://datatable/${t.id}`,
         name: t.name,
         description: t.description || `Filas de la tabla de datos "${t.name}"`,
         mimeType: 'application/json',
       }));
-      return { status: 200, payload: { jsonrpc: '2.0', id, result: { resources } } };
+      // Definiciones de flujo como contexto (estructura del grafo, no ejecución).
+      const workflows = await resolveScopedWorkflows(scope);
+      const workflowResources = (workflows || []).map((w: any) => ({
+        uri: `libreflow://workflow/${w.id}`,
+        name: `Flujo: ${w.name}`,
+        description: w.description || `Definición del flujo "${w.name}" (nodos y conexiones)`,
+        mimeType: 'application/json',
+      }));
+      return { status: 200, payload: { jsonrpc: '2.0', id, result: { resources: [...tableResources, ...workflowResources] } } };
     }
 
     if (method === 'resources/read') {
@@ -697,20 +705,36 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
         return { status: 404, payload: { jsonrpc: '2.0', id, error: { code: -32601, message: 'Resources not enabled on this server' } } };
       }
       const uri = String(params?.uri || '');
-      const m = uri.match(/^libreflow:\/\/datatable\/(.+)$/);
-      if (!m) {
-        return { status: 200, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown resource uri: ${uri}` } } };
+      const tableMatch = uri.match(/^libreflow:\/\/datatable\/(.+)$/);
+      if (tableMatch) {
+        const tableId = tableMatch[1];
+        const rows = await queryDataTableRows(tableId, [], { limit: AGENT_ROW_LIMIT });
+        const out = {
+          table: tableId,
+          returned: rows.length,
+          limit: AGENT_ROW_LIMIT,
+          truncated: rows.length >= AGENT_ROW_LIMIT,
+          rows: rows.map(slimRow),
+        };
+        return { status: 200, payload: { jsonrpc: '2.0', id, result: { contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(out) }] } } };
       }
-      const tableId = m[1];
-      const rows = await queryDataTableRows(tableId, [], { limit: AGENT_ROW_LIMIT });
-      const out = {
-        table: tableId,
-        returned: rows.length,
-        limit: AGENT_ROW_LIMIT,
-        truncated: rows.length >= AGENT_ROW_LIMIT,
-        rows: rows.map(slimRow),
-      };
-      return { status: 200, payload: { jsonrpc: '2.0', id, result: { contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(out) }] } } };
+      const workflowMatch = uri.match(/^libreflow:\/\/workflow\/(.+)$/);
+      if (workflowMatch) {
+        const workflow = await getWorkflowById(workflowMatch[1]);
+        if (!workflow) {
+          return { status: 200, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown resource uri: ${uri}` } } };
+        }
+        const def = {
+          id: workflow.id,
+          name: workflow.name,
+          description: workflow.description ?? null,
+          active: workflow.active ?? false,
+          nodes: workflow.nodes,
+          connections: workflow.connections,
+        };
+        return { status: 200, payload: { jsonrpc: '2.0', id, result: { contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(def) }] } } };
+      }
+      return { status: 200, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown resource uri: ${uri}` } } };
     }
 
     if (method === 'tools/list') {
