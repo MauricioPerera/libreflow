@@ -58,7 +58,7 @@ import { constantTimeEqual } from './auth.js';
 import { triggerManager } from './triggerManager.js';
 import { Server as McpSdkServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { ListToolsRequestSchema, CallToolRequestSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { ListToolsRequestSchema, CallToolRequestSchema, ListResourcesRequestSchema, ReadResourceRequestSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { Client as McpSdkClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -618,6 +618,9 @@ const TOOL_ANNOTATIONS: Record<string, any> = {
 export interface McpScope {
   workflowIds: string[] | null;
   exposeSystemTools: boolean;
+  // Expone las data-tables como RESOURCES MCP de solo lectura. Solo en el server global
+  // (tras auth); los named servers son exposiciones curadas de tools (v1: sin resources).
+  exposeResources?: boolean;
 }
 
 async function resolveScopedWorkflows(scope: McpScope): Promise<any[]> {
@@ -659,6 +662,8 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
 
   try {
     if (method === 'initialize') {
+      const capabilities: any = { tools: {} };
+      if (scope.exposeResources) capabilities.resources = {};
       return {
         status: 200,
         payload: {
@@ -666,11 +671,46 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
           id,
           result: {
             protocolVersion: '2024-11-05',
-            capabilities: { tools: {} },
+            capabilities,
             serverInfo: { name: 'LibreFlow MCP Server', version: '1.0.0' }
           }
         }
       };
+    }
+
+    // RESOURCES (solo lectura): las data-tables como contexto adjuntable por el host MCP.
+    // Distinto de las tools (acción llamada por el modelo). Solo si el scope lo permite.
+    if (method === 'resources/list') {
+      if (!scope.exposeResources) return { status: 200, payload: { jsonrpc: '2.0', id, result: { resources: [] } } };
+      const tables = await getDataTables();
+      const resources = (tables || []).map((t: any) => ({
+        uri: `libreflow://datatable/${t.id}`,
+        name: t.name,
+        description: t.description || `Filas de la tabla de datos "${t.name}"`,
+        mimeType: 'application/json',
+      }));
+      return { status: 200, payload: { jsonrpc: '2.0', id, result: { resources } } };
+    }
+
+    if (method === 'resources/read') {
+      if (!scope.exposeResources) {
+        return { status: 404, payload: { jsonrpc: '2.0', id, error: { code: -32601, message: 'Resources not enabled on this server' } } };
+      }
+      const uri = String(params?.uri || '');
+      const m = uri.match(/^libreflow:\/\/datatable\/(.+)$/);
+      if (!m) {
+        return { status: 200, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown resource uri: ${uri}` } } };
+      }
+      const tableId = m[1];
+      const rows = await queryDataTableRows(tableId, [], { limit: AGENT_ROW_LIMIT });
+      const out = {
+        table: tableId,
+        returned: rows.length,
+        limit: AGENT_ROW_LIMIT,
+        truncated: rows.length >= AGENT_ROW_LIMIT,
+        rows: rows.map(slimRow),
+      };
+      return { status: 200, payload: { jsonrpc: '2.0', id, result: { contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(out) }] } } };
     }
 
     if (method === 'tools/list') {
@@ -1007,9 +1047,11 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
 // the existing scope-aware dispatchMcpRpc so there is a single source of truth.
 
 function buildSdkServer(scope: McpScope): McpSdkServer {
+  const capabilities: any = { tools: {} };
+  if (scope.exposeResources) capabilities.resources = {};
   const server = new McpSdkServer(
     { name: 'LibreFlow MCP Server', version: '1.0.0' },
-    { capabilities: { tools: {} } }
+    { capabilities }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -1026,6 +1068,20 @@ function buildSdkServer(scope: McpScope): McpSdkServer {
     if (payload.error) throw new McpError(payload.error.code, payload.error.message);
     return payload.result;
   });
+
+  // Resources (solo si el scope los expone): delegan en dispatchMcpRpc (única fuente).
+  if (scope.exposeResources) {
+    server.setRequestHandler(ListResourcesRequestSchema, async () => {
+      const { payload } = await dispatchMcpRpc({ jsonrpc: '2.0', id: 0, method: 'resources/list' }, scope);
+      if (payload.error) throw new McpError(payload.error.code, payload.error.message);
+      return payload.result;
+    });
+    server.setRequestHandler(ReadResourceRequestSchema, async (req: any) => {
+      const { payload } = await dispatchMcpRpc({ jsonrpc: '2.0', id: 0, method: 'resources/read', params: req.params }, scope);
+      if (payload.error) throw new McpError(payload.error.code, payload.error.message);
+      return payload.result;
+    });
+  }
 
   return server;
 }
@@ -1052,7 +1108,7 @@ function methodNotAllowed(_req: any, res: Response) {
 }
 
 // Global server (POST /api/mcp): all active workflows + system tools.
-router.post('/', (req, res) => handleStreamableHttp(req, res, { workflowIds: null, exposeSystemTools: true }));
+router.post('/', (req, res) => handleStreamableHttp(req, res, { workflowIds: null, exposeSystemTools: true, exposeResources: true }));
 router.get('/', methodNotAllowed);
 router.delete('/', methodNotAllowed);
 
@@ -1080,7 +1136,7 @@ router.post('/message', async (req, res) => {
     return res.status(400).json({ jsonrpc: '2.0', id: req.body.id || null, error: { code: -32600, message: 'Invalid Request' } });
   }
 
-  const { status, payload } = await dispatchMcpRpc(req.body, { workflowIds: null, exposeSystemTools: true });
+  const { status, payload } = await dispatchMcpRpc(req.body, { workflowIds: null, exposeSystemTools: true, exposeResources: true });
   return res.status(status).json(payload);
 });
 
