@@ -1237,8 +1237,45 @@ export async function openMcpClientSession(serverUrl: string, headers?: Record<s
   return {
     listTools: async () => (await client.listTools()).tools || [],
     callTool: async (name: string, args: Record<string, any>) => client.callTool({ name, arguments: args }),
+    // Recursos MCP (p.ej. skills firmadas servidas por un bridge tipo postal-skills).
+    // Tolerante: un servidor que no implemente recursos devuelve method-not-found → [].
+    listResources: async () => {
+      try { return ((await (client as any).listResources())?.resources) || []; } catch { return []; }
+    },
+    readResource: async (uri: string) => {
+      try { return await (client as any).readResource({ uri }); } catch { return null; }
+    },
     close: () => client.close().catch(() => {}),
   };
+}
+
+/**
+ * Formatea una lista de skills (instrucciones de confianza leídas de recursos MCP) en un
+ * bloque de system message para inyectar en el contexto del agente. Ignora las vacías.
+ */
+export function buildSkillsBlock(skills: { name?: string; text: string }[]): string {
+  const parts = (skills || [])
+    .filter(s => s && s.text && s.text.trim())
+    .map(s => `## ${s.name || 'skill'}\n${s.text.trim()}`);
+  if (parts.length === 0) return '';
+  return `Tienes acceso a las siguientes skills (instrucciones de confianza). Síguelas cuando apliquen:\n\n${parts.join('\n\n')}`;
+}
+
+interface McpResourceSession {
+  listResources: () => Promise<any[]>;
+  readResource: (uri: string) => Promise<any>;
+}
+
+/** Lee todos los recursos-skill de una sesión MCP y devuelve el bloque de contexto formateado. */
+export async function loadSkillsFromSession(session: McpResourceSession): Promise<string> {
+  const resources = await session.listResources();
+  const skills: { name?: string; text: string }[] = [];
+  for (const r of resources || []) {
+    const read: any = await session.readResource(r.uri);
+    const text = (read?.contents || []).map((c: any) => c.text).filter(Boolean).join('\n');
+    if (text) skills.push({ name: r.name || r.uri, text });
+  }
+  return buildSkillsBlock(skills);
 }
 
 export async function fetchToolsFromMcpServer(serverUrl: string, headers?: Record<string, string>): Promise<any[]> {

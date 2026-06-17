@@ -1479,6 +1479,13 @@ const aiAgentNode: LibreFlowNodeDefinition = {
         { label: 'Más similar (texto libre, centroide léxico)', value: 'mostSimilar' },
         { label: 'La primera', value: 'first' }
       ]
+    },
+    {
+      name: 'loadSkills',
+      label: 'Cargar skills desde recursos del servidor MCP',
+      type: 'boolean',
+      default: false,
+      description: 'Si el servidor MCP externo expone recursos (instrucciones/skills, p.ej. un bridge tipo postal-skills), los lee y los inyecta en el contexto del agente como instrucciones de confianza.'
     }
   ],
   execute: async (params) => {
@@ -1497,7 +1504,8 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       temperature = '0',
       timeoutMs = '120000',
       runs = '1',
-      consensus = 'majority'
+      consensus = 'majority',
+      loadSkills = false
     } = params;
 
     if (!model) throw new Error('AI Agent error: model is required');
@@ -1527,6 +1535,8 @@ const aiAgentNode: LibreFlowNodeDefinition = {
     let openaiTools: any[] = [];
     let callTool: ((name: string, args: any) => Promise<string>) | null = null;
     let mcpSession: { close: () => void } | null = null;
+    // Skills (instrucciones de confianza leídas de recursos MCP) inyectadas en el contexto.
+    let skillsBlock = '';
 
     if (mcpServerUrl) {
       // External MCP: auth from the vault, ONE persistent client session reused across the
@@ -1535,14 +1545,18 @@ const aiAgentNode: LibreFlowNodeDefinition = {
         ? await resolveCredentialAuth(mcpCredentialId)
         : { headers: {}, query: {} };
       const url = appendQueryParams(mcpServerUrl, mcpAuth.query);
-      const { openMcpClientSession } = await import('./mcp.js');
-      const session = await openMcpClientSession(url, mcpAuth.headers);
+      const { openMcpClientSession, loadSkillsFromSession } = await import('./mcp.js');
+      const session: any = await openMcpClientSession(url, mcpAuth.headers);
       mcpSession = session;
       openaiTools = toOpenAI(await session.listTools());
       callTool = async (name, args) => {
         const result: any = await session.callTool(name, args);
         return result?.content?.[0]?.text ?? JSON.stringify(result ?? {});
       };
+
+      // Carga de skills desde los RECURSOS del servidor MCP (una vez; se comparten entre runs).
+      // Solo aplica a servidores externos que expongan recursos.
+      if (loadSkills) skillsBlock = await loadSkillsFromSession(session);
     } else if (mcpServerId) {
       const { dispatchMcpRpc } = await import('./mcp.js');
       const { getMcpServerById } = await import('./db.js');
@@ -1567,6 +1581,7 @@ const aiAgentNode: LibreFlowNodeDefinition = {
     const runOnce = async () => {
       const messages: any[] = [];
       if (systemPrompt) messages.push({ role: 'system', content: String(systemPrompt) });
+      if (skillsBlock) messages.push({ role: 'system', content: skillsBlock });
       messages.push({ role: 'user', content: String(userMessage) });
       const trace: any[] = [];
       let answer = '';
