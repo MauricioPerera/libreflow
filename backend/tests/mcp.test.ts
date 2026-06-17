@@ -3,7 +3,7 @@ import express from 'express';
 import { Server as SdkServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import router, { sanitizeMcpName, activeConnections, validateWorkflow } from '../src/mcp.js';
+import router, { sanitizeMcpName, activeConnections, validateWorkflow, dispatchMcpRpc } from '../src/mcp.js';
 import { executeNode } from '../src/nodes.js';
 import { NodeRegistry } from '../src/registry.js';
 import { executeMcpToolCall, fetchToolsFromMcpServer } from '../src/mcp.js';
@@ -506,5 +506,46 @@ describe('MCP Server & Client Integration', () => {
       expect(result.tableId).toBe('table-1');
       expect(result.data.email).toBe('inserted@example.com');
     });
+  });
+});
+
+describe('MCP resources (data-tables como contexto, server global)', () => {
+  const globalScope = { workflowIds: null, exposeSystemTools: true, exposeResources: true };
+
+  it('initialize anuncia la capability resources cuando exposeResources', async () => {
+    const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 1, method: 'initialize' }, globalScope as any);
+    expect(r.payload.result.capabilities.resources).toBeDefined();
+  });
+
+  it('initialize NO anuncia resources sin exposeResources (named server)', async () => {
+    const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 1, method: 'initialize' }, { workflowIds: null, exposeSystemTools: false } as any);
+    expect(r.payload.result.capabilities.resources).toBeUndefined();
+  });
+
+  it('resources/list devuelve las data-tables como recursos', async () => {
+    const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 2, method: 'resources/list' }, globalScope as any);
+    const res = r.payload.result.resources;
+    expect(res).toHaveLength(1);
+    expect(res[0]).toMatchObject({ uri: 'libreflow://datatable/table-1', name: 'Leads', mimeType: 'application/json' });
+  });
+
+  it('resources/list vacío cuando el scope no expone resources', async () => {
+    const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 2, method: 'resources/list' }, { workflowIds: null, exposeSystemTools: false } as any);
+    expect(r.payload.result.resources).toEqual([]);
+  });
+
+  it('resources/read devuelve el contenido de la tabla (filas capadas)', async () => {
+    const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 3, method: 'resources/read', params: { uri: 'libreflow://datatable/table-1' } }, globalScope as any);
+    const c = r.payload.result.contents[0];
+    expect(c.uri).toBe('libreflow://datatable/table-1');
+    expect(c.mimeType).toBe('application/json');
+    const parsed = JSON.parse(c.text);
+    expect(parsed).toMatchObject({ table: 'table-1', limit: 20 });
+    expect(Array.isArray(parsed.rows)).toBe(true);
+  });
+
+  it('resources/read con uri desconocida -> error', async () => {
+    const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 3, method: 'resources/read', params: { uri: 'foo://bar' } }, globalScope as any);
+    expect(r.payload.error).toBeDefined();
   });
 });

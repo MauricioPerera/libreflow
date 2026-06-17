@@ -147,7 +147,10 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   `dispatchMcpRpc(body, scope)` is the single JSON-RPC source of truth (scope = which
   workflows + whether the `libreflow_*` system tools are exposed). Transports: **Streamable
   HTTP** (current spec) at `POST /api/mcp` (global) and `POST /mcp/:serverId` (named servers);
-  legacy SSE kept for back-compat. **Named MCP servers** expose a curated workflow group as
+  legacy SSE kept for back-compat. The global server also exposes **resources** (`scope.exposeResources`):
+  the data-tables as read-only MCP resources (`libreflow://datatable/{id}`, rows capped by
+  `AGENT_ROW_LIMIT`) — agent *context* the host can attach, distinct from tools. Named servers
+  stay tools-only (v1). **Named MCP servers** expose a curated workflow group as
   tools at their own token-protected URL. Client (`fetchToolsFromMcpServer` /
   `executeMcpToolCall` / `openMcpClientSession`) consumes Streamable HTTP or SSE. Tools return
   compact JSON + `structuredContent` + annotations, with default row limits (agent-first).
