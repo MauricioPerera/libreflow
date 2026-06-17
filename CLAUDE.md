@@ -61,7 +61,10 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   first/majority/mostSimilar), returning the consensus answer + an `agreement` ratio.
   Optional **skills**: `loadSkills` reads an external MCP server's **resources** (not tools) via
   `loadSkillsFromSession` (`mcp.ts`) and injects them as a trusted-instructions system message —
-  e.g. a signed/governed skill registry (postal-skills) served over MCP. Shared
+  e.g. a signed/governed skill registry (postal-skills) served over MCP. Optional **MCP prompts**:
+  `mcpPromptName` (+ JSON `mcpPromptArgs`) fetches a parameterized prompt template from the external
+  server via `loadPromptMessages` (`mcp.ts`, the third MCP primitive — `prompts/get`) and seeds the
+  conversation with its messages (after system/skills, before the user turn). Shared
   credential→auth helper (`resolveCredentialAuth`) used by httpRequest / mcpToolCall / aiAgent;
   schemes: basicAuth, apiKey, and **oauth2** (`oauth2.ts`: server-to-server client_credentials /
   refresh_token **plus interactive authorization_code + PKCE**, auto token fetch/refresh,

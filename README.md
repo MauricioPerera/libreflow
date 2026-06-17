@@ -19,7 +19,7 @@ with an Express + SQLite backend and a Vue 3 + Vue Flow frontend.
   **Streamable HTTP** transport via the official `@modelcontextprotocol/sdk`. Beyond tools, the
   global server also serves **resources** — your data-tables (`libreflow://datatable/{id}`) and
   workflow definitions (`libreflow://workflow/{id}`) as read-only context — and the `aiAgent` can
-  **consume** skills from another server's MCP resources.
+  **consume** skills (MCP resources) and **prompt templates** (MCP `prompts`) from another server.
 - **Custom HTTP responses & web forms** — a webhook trigger can be **synchronous**
   (`responseMode`: `lastNode`/`respondNode`) and the `respond` node returns a custom
   status/headers/body. A **form trigger** serves an auto-generated public web form

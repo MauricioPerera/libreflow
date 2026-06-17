@@ -1325,6 +1325,14 @@ export async function openMcpClientSession(serverUrl: string, headers?: Record<s
     readResource: async (uri: string) => {
       try { return await (client as any).readResource({ uri }); } catch { return null; }
     },
+    // Prompts MCP (plantillas parametrizables servidas por un servidor gobernado).
+    // Tolerante: un servidor sin prompts devuelve method-not-found → [] / null.
+    listPrompts: async () => {
+      try { return ((await (client as any).listPrompts())?.prompts) || []; } catch { return []; }
+    },
+    getPrompt: async (name: string, args?: Record<string, any>) => {
+      try { return await (client as any).getPrompt({ name, arguments: args || {} }); } catch { return null; }
+    },
     close: () => client.close().catch(() => {}),
   };
 }
@@ -1356,6 +1364,38 @@ export async function loadSkillsFromSession(session: McpResourceSession): Promis
     if (text) skills.push({ name: r.name || r.uri, text });
   }
   return buildSkillsBlock(skills);
+}
+
+interface McpPromptSession {
+  getPrompt: (name: string, args?: Record<string, any>) => Promise<any>;
+}
+
+/** Mensaje de chat en formato OpenAI (rol + texto). */
+export interface ChatMessage { role: string; content: string }
+
+/**
+ * Trae un prompt MCP parametrizable de una sesión y lo convierte en mensajes de chat
+ * (formato OpenAI: rol + texto). Los roles MCP `user`/`assistant` se mapean tal cual; el
+ * texto se extrae del content `text`. Filtra mensajes vacíos. Si el servidor no tiene el
+ * prompt (o no implementa prompts), devuelve []. Es la semilla de la conversación del agente.
+ */
+export async function loadPromptMessages(
+  session: McpPromptSession,
+  name: string,
+  args?: Record<string, any>
+): Promise<ChatMessage[]> {
+  if (!name) return [];
+  const result: any = await session.getPrompt(name, args);
+  const messages: ChatMessage[] = [];
+  for (const m of (result?.messages || [])) {
+    const role = m?.role === 'assistant' ? 'assistant' : 'user';
+    const c = m?.content;
+    const text = typeof c?.text === 'string'
+      ? c.text
+      : Array.isArray(c) ? c.map((x: any) => x?.text).filter(Boolean).join('\n') : '';
+    if (text && text.trim()) messages.push({ role, content: text.trim() });
+  }
+  return messages;
 }
 
 export async function fetchToolsFromMcpServer(serverUrl: string, headers?: Record<string, string>): Promise<any[]> {

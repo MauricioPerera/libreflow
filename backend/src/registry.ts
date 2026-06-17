@@ -1486,6 +1486,22 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       type: 'boolean',
       default: false,
       description: 'Si el servidor MCP externo expone recursos (instrucciones/skills, p.ej. un bridge tipo postal-skills), los lee y los inyecta en el contexto del agente como instrucciones de confianza.'
+    },
+    {
+      name: 'mcpPromptName',
+      label: 'Prompt MCP (nombre)',
+      type: 'string',
+      default: '',
+      placeholder: 'Opcional. Nombre de un prompt del servidor MCP externo.',
+      description: 'Si el servidor MCP externo expone prompts (plantillas parametrizables gobernadas), trae el prompt indicado y lo usa como semilla de la conversación (antes del mensaje del usuario).'
+    },
+    {
+      name: 'mcpPromptArgs',
+      label: 'Argumentos del prompt MCP (JSON)',
+      type: 'string',
+      default: '',
+      placeholder: '{"tono":"formal"}',
+      description: 'Objeto JSON con los argumentos del prompt MCP.'
     }
   ],
   execute: async (params) => {
@@ -1505,7 +1521,9 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       timeoutMs = '120000',
       runs = '1',
       consensus = 'majority',
-      loadSkills = false
+      loadSkills = false,
+      mcpPromptName = '',
+      mcpPromptArgs = ''
     } = params;
 
     if (!model) throw new Error('AI Agent error: model is required');
@@ -1537,6 +1555,8 @@ const aiAgentNode: LibreFlowNodeDefinition = {
     let mcpSession: { close: () => void } | null = null;
     // Skills (instrucciones de confianza leídas de recursos MCP) inyectadas en el contexto.
     let skillsBlock = '';
+    // Mensajes-semilla traídos de un prompt MCP parametrizable (se comparten entre runs).
+    let promptMessages: { role: string; content: string }[] = [];
 
     if (mcpServerUrl) {
       // External MCP: auth from the vault, ONE persistent client session reused across the
@@ -1545,7 +1565,7 @@ const aiAgentNode: LibreFlowNodeDefinition = {
         ? await resolveCredentialAuth(mcpCredentialId)
         : { headers: {}, query: {} };
       const url = appendQueryParams(mcpServerUrl, mcpAuth.query);
-      const { openMcpClientSession, loadSkillsFromSession } = await import('./mcp.js');
+      const { openMcpClientSession, loadSkillsFromSession, loadPromptMessages } = await import('./mcp.js');
       const session: any = await openMcpClientSession(url, mcpAuth.headers);
       mcpSession = session;
       openaiTools = toOpenAI(await session.listTools());
@@ -1557,6 +1577,16 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       // Carga de skills desde los RECURSOS del servidor MCP (una vez; se comparten entre runs).
       // Solo aplica a servidores externos que expongan recursos.
       if (loadSkills) skillsBlock = await loadSkillsFromSession(session);
+
+      // Prompt MCP parametrizable (plantilla gobernada) como semilla de la conversación.
+      if (mcpPromptName) {
+        let promptArgs: Record<string, any> = {};
+        if (mcpPromptArgs) {
+          try { promptArgs = JSON.parse(String(mcpPromptArgs)); }
+          catch { throw new Error('AI Agent error: mcpPromptArgs no es JSON válido'); }
+        }
+        promptMessages = await loadPromptMessages(session, String(mcpPromptName), promptArgs);
+      }
     } else if (mcpServerId) {
       const { dispatchMcpRpc } = await import('./mcp.js');
       const { getMcpServerById } = await import('./db.js');
@@ -1582,6 +1612,7 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       const messages: any[] = [];
       if (systemPrompt) messages.push({ role: 'system', content: String(systemPrompt) });
       if (skillsBlock) messages.push({ role: 'system', content: skillsBlock });
+      for (const pm of promptMessages) messages.push({ role: pm.role, content: pm.content });
       messages.push({ role: 'user', content: String(userMessage) });
       const trace: any[] = [];
       let answer = '';
