@@ -27,3 +27,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Config local de MCP (rutas absolutas, machine-specific)
+.mcp.json
