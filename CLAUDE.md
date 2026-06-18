@@ -134,11 +134,14 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
 - **collections.ts** — pure local-collection primitives (no DB): `compareValues`, `filterItems`,
   `summarize` (group by + count/sum/avg/min/max), `sortItems`, `limitItems`, `uniqueItems`,
   `getPath` (dotted paths). Backs the switch/filter/aggregate nodes.
-- **fileParse.ts** — pure parse/serialize of file CONTENT via SheetJS (`xlsx`): `parseFileBuffer`
-  / `serializeToFile` / `detectFormat` for CSV/XLSX/JSON/text, plus `parsePdfBuffer` (async, PDF
-  text extraction via `pdf-parse` v2 / pdf.js — extract-only). Sanitizes object keys on parse
-  (`isUnsafeKey`) to mitigate SheetJS 0.18.x prototype pollution. Used by the
-  extractFromFile/convertToFile nodes; the bytes live in the binary store, never inline.
+- **fileParse.ts** — pure parse/serialize of file CONTENT. CSV via own parser/serializer
+  (`parseCsv`/`toCsv`, no dependency, RFC-4180 quoting); XLSX via **`exceljs`** (maintained —
+  replaced SheetJS `xlsx`, which had a high-severity prototype-pollution + ReDoS advisory with
+  no upstream fix, the real risk when ingesting untrusted files); PDF text via `pdf-parse`
+  (`parsePdfBuffer`). Sync path (`parseFileBuffer`/`serializeToFile`) handles csv/json/text;
+  XLSX/PDF are async (`parseXlsxBuffer`/`serializeXlsxFile`/`parsePdfBuffer`). Object keys are
+  sanitized on parse (`isUnsafeKey`). Used by the extractFromFile/convertToFile nodes; the bytes
+  live in the binary store, never inline.
 - **forms.ts** — public **form trigger** rendering (no DB, no state): `renderFormPage` /
   `renderCompletionPage` / `parseFormFields` / `validateFormValues`. Routes `GET/POST
   /form/:workflowId` (public, no HMAC — browser-driven; guarded by active-flow +

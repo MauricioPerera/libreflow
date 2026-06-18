@@ -2,7 +2,7 @@ import { LibreFlowNodeDefinition } from './sdk.js';
 import { WorkflowSuspendError } from './engine.js';
 import { getCredentialById, getWorkflowById, getBinary } from './db.js';
 import { storeBinary, isBinaryRef, fileNameFromUrl, readResponseCapped, MAX_BINARY_BYTES } from './binary.js';
-import { parseFileBuffer, serializeToFile, detectFormat, parsePdfBuffer, FileFormat } from './fileParse.js';
+import { parseFileBuffer, serializeToFile, detectFormat, parsePdfBuffer, parseXlsxBuffer, serializeXlsxFile, FileFormat } from './fileParse.js';
 import { compareValues, filterItems, summarize, sortItems, limitItems, uniqueItems, Aggregation, mergeAnswers, ConsensusStrategy } from './collections.js';
 import ivm from 'isolated-vm';
 import { executeMcpToolCall } from './mcp.js';
@@ -1267,15 +1267,20 @@ const extractFromFileNode: LibreFlowNodeDefinition = {
       ? params.format
       : detectFormat({ mimeType: bin.mime_type || ref.mimeType, fileName: bin.file_name || ref.fileName });
 
-    // El PDF es extracción de texto asíncrona (pdf.js); el resto, parseo síncrono.
+    // PDF y XLSX son asíncronos (pdf.js / exceljs); csv/json/text son síncronos.
     if (fmt === 'pdf') {
       return await parsePdfBuffer(bin.data);
+    }
+    if (fmt === 'xlsx') {
+      return await parseXlsxBuffer(bin.data, {
+        hasHeader: params.hasHeader !== false,
+        sheetName: params.sheetName || undefined,
+      });
     }
 
     return parseFileBuffer(bin.data, {
       format: fmt,
       hasHeader: params.hasHeader !== false,
-      sheetName: params.sheetName || undefined,
       delimiter: params.delimiter || undefined,
     });
   }
@@ -1328,11 +1333,10 @@ const convertToFileNode: LibreFlowNodeDefinition = {
   ],
   execute: async (params, _context, _inputs, execMeta) => {
     const format: FileFormat = params.format || 'csv';
-    const { buffer, mimeType, ext } = serializeToFile({
-      format,
-      data: params.data,
-      sheetName: params.sheetName || undefined,
-    });
+    // XLSX es asíncrono (exceljs); csv/json/text son síncronos.
+    const { buffer, mimeType, ext } = format === 'xlsx'
+      ? await serializeXlsxFile(params.data, params.sheetName || undefined)
+      : serializeToFile({ format: format as 'csv' | 'json' | 'text', data: params.data });
 
     const base = String(params.fileName || 'output').replace(/\.[^.]+$/, '');
     const fileName = `${base}.${ext}`;

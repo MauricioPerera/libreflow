@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initDatabase, getBinary } from '../src/db.js';
 import { isBinaryRef, storeBinary } from '../src/binary.js';
 import { WorkflowEngine } from '../src/engine.js';
-import { detectFormat, parseFileBuffer, serializeToFile, parsePdfBuffer } from '../src/fileParse.js';
+import { detectFormat, parseFileBuffer, serializeToFile, parsePdfBuffer, parseXlsxBuffer, serializeXlsxFile, parseCsv } from '../src/fileParse.js';
 
 // PDF mínimo válido con el texto "Hola PDF" (un solo objeto de página).
 const MINIMAL_PDF_B64 = 'JVBERi0xLjQKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFI+PgplbmRvYmoKMiAwIG9iago8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PgplbmRvYmoKMyAwIG9iago8PC9UeXBlL1BhZ2UvUGFyZW50IDIgMCBSL01lZGlhQm94WzAgMCA2MTIgNzkyXS9SZXNvdXJjZXM8PC9Gb250PDwvRjEgNCAwIFI+Pj4+L0NvbnRlbnRzIDUgMCBSPj4KZW5kb2JqCjQgMCBvYmoKPDwvVHlwZS9Gb250L1N1YnR5cGUvVHlwZTEvQmFzZUZvbnQvSGVsdmV0aWNhPj4KZW5kb2JqCjUgMCBvYmoKPDwvTGVuZ3RoIDQ0Pj4Kc3RyZWFtCkJUCi9GMSAyNCBUZgoxMDAgNzAwIFRkCihIb2xhIFBERikgVGoKRVQKZW5kc3RyZWFtCmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDUgMDAwMDAgbiAKMDAwMDAwMDMxNyAwMDAwMCBuIAp0cmFpbGVyCjw8L1NpemUgNi9Sb290IDEgMCBSPj4Kc3RhcnR4cmVmCjQxMQolJUVPRgo';
@@ -46,17 +46,24 @@ describe('fileParse: parse/serialize puros', () => {
     expect(r.rows).toEqual([['a', 'b'], [1, 2]]);
   });
 
-  it('XLSX round-trip: serializa y vuelve a leer', () => {
-    const { buffer, ext } = serializeToFile({ format: 'xlsx', data: [{ id: 1, ok: true }, { id: 2, ok: false }], sheetName: 'Hoja' });
+  it('XLSX round-trip: serializa y vuelve a leer (exceljs, async)', async () => {
+    const { buffer, ext, mimeType } = await serializeXlsxFile([{ id: 1, ok: true }, { id: 2, ok: false }], 'Hoja');
     expect(ext).toBe('xlsx');
-    const r = parseFileBuffer(buffer, { format: 'xlsx' });
+    expect(mimeType).toContain('spreadsheetml');
+    expect(buffer.slice(0, 2).toString('hex')).toBe('504b'); // ZIP/XLSX válido
+    const r = await parseXlsxBuffer(buffer);
     expect(r.rows).toEqual([{ id: 1, ok: true }, { id: 2, ok: false }]);
   });
 
-  it('XLSX respeta el nombre de hoja al leer', () => {
-    const { buffer } = serializeToFile({ format: 'xlsx', data: [{ v: 9 }], sheetName: 'MiHoja' });
-    const r = parseFileBuffer(buffer, { format: 'xlsx', sheetName: 'MiHoja' });
+  it('XLSX respeta el nombre de hoja al leer', async () => {
+    const { buffer } = await serializeXlsxFile([{ v: 9 }], 'MiHoja');
+    const r = await parseXlsxBuffer(buffer, { sheetName: 'MiHoja' });
     expect(r.rows).toEqual([{ v: 9 }]);
+  });
+
+  it('parseCsv maneja comillas, separadores y saltos dentro de comillas', () => {
+    const m = parseCsv('a,b\n"x,y","línea\n2"\n"con ""comilla""",z');
+    expect(m).toEqual([['a', 'b'], ['x,y', 'línea\n2'], ['con "comilla"', 'z']]);
   });
 
   it('JSON serialize: objeto suelto', () => {
