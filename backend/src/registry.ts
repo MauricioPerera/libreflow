@@ -848,24 +848,11 @@ const loopNode: LibreFlowNodeDefinition = {
       description: '>1 itera en lotes: el cuerpo recibe {{ $node.Loop.output.items }} (array del lote) en vez de .item.'
     }
   ],
-  execute: async (params) => {
-    const currentIndex = params._currentIndex ?? 0;
-    const items = params._items || [];
-    const results = params._results || [];
-    
-    if (items.length === 0 || currentIndex >= items.length) {
-      return {
-        done: true,
-        results
-      };
-    }
-    
-    return {
-      done: false,
-      item: items[currentIndex],
-      index: currentIndex,
-      isLast: currentIndex === items.length - 1
-    };
+  // El motor intercepta `type === 'loop'` (engine.runLoop) y NUNCA llama a este execute:
+  // la iteración (item-a-item o por lotes) y el output {done,results} los produce el engine.
+  // Si esto se invoca, es un bug de invariante (igual que waitNode con su señal de suspensión).
+  execute: async () => {
+    throw new Error('El nodo "loop" lo gestiona el motor (runLoop); executeNode no debería invocarse para un loop.');
   }
 };
 

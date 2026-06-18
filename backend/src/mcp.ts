@@ -53,7 +53,7 @@ function dataResult(id: any, data: any) {
   };
 }
 import { NodeRegistry } from './registry.js';
-import { assertSafeUrl } from './security.js';
+import { assertSafeUrl, safeFetch } from './security.js';
 import { constantTimeEqual } from './auth.js';
 import { triggerManager } from './triggerManager.js';
 import { Server as McpSdkServer } from '@modelcontextprotocol/sdk/server/index.js';
@@ -1282,18 +1282,19 @@ async function connectMcpClient(serverUrl: string, headers?: Record<string, stri
   await assertSafeUrl(serverUrl); // SSRF guard
   const url = new URL(serverUrl);
 
-  // Inject auth headers (when provided) into EVERY request via a custom fetch — this
+  // Route EVERY request the SDK makes through `safeFetch` (re-validates SSRF on each redirect
+  // hop, not just the initial URL) and inject auth headers when provided. The custom fetch is
+  // set ALWAYS — even without headers — so the redirect re-validation always applies. This
   // also covers the SSE GET stream, which doesn't go through requestInit.
   const hasHeaders = !!headers && Object.keys(headers).length > 0;
   const opts: any = {};
-  if (hasHeaders) {
-    opts.requestInit = { headers };
-    opts.fetch = (input: any, init: any = {}) => {
-      const h = new Headers(init.headers || {});
-      for (const [k, v] of Object.entries(headers!)) h.set(k, v);
-      return fetch(input, { ...init, headers: h });
-    };
-  }
+  if (hasHeaders) opts.requestInit = { headers };
+  opts.fetch = (input: any, init: any = {}) => {
+    const u = typeof input === 'string' ? input : (input?.url ?? String(input));
+    const h = new Headers(init.headers || {});
+    if (hasHeaders) for (const [k, v] of Object.entries(headers!)) h.set(k, v);
+    return safeFetch(u, { ...init, headers: h });
+  };
 
   try {
     const client = new McpSdkClient({ name: 'LibreFlow-Client', version: '1.0.0' }, { capabilities: {} });
