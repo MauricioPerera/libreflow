@@ -1,5 +1,9 @@
 import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
+import { verifyToken } from './jwt.js';
+
+/** Usuario resuelto por requireAuth y adjuntado a la request (lo consume el enforcement F2). */
+export interface AuthUser { id: string; email?: string; role: string }
 
 const API_KEY = process.env.LF_API_KEY;
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -30,13 +34,28 @@ export function constantTimeEqual(a: string, b: string): boolean {
  * When LF_API_KEY is unset (dev only) the guard is a no-op.
  */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  if (!API_KEY) return next();
-
   const headerKey = req.header('x-api-key');
   const bearer = (req.header('authorization') || '').replace(/^Bearer\s+/i, '');
-  const provided = headerKey || bearer;
 
+  // 1) JWT de usuario (multi-usuario): si verifica, adjunta el usuario y pasa.
+  if (bearer) {
+    const payload = verifyToken(bearer);
+    if (payload && payload.sub) {
+      (req as any).user = { id: payload.sub, email: payload.email, role: payload.role || 'user' } as AuthUser;
+      return next();
+    }
+  }
+
+  // 2) Dev sin API key: auth deshabilitada → admin implícito.
+  if (!API_KEY) {
+    (req as any).user = { id: 'dev', role: 'admin' } as AuthUser;
+    return next();
+  }
+
+  // 3) API key global = admin break-glass (compatibilidad hacia atrás).
+  const provided = headerKey || bearer;
   if (provided && safeEqual(provided, API_KEY)) {
+    (req as any).user = { id: 'apikey-admin', role: 'admin' } as AuthUser;
     return next();
   }
   return res.status(401).json({ error: 'Unauthorized' });
