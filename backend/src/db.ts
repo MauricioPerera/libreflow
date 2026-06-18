@@ -139,6 +139,25 @@ export async function initDatabase() {
     );
   `);
 
+  // Usuarios (auth multi-usuario). `owner_id` en los recursos referencia users.id.
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'user',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Propiedad de recursos. Nullable a propósito: el enforcement de aislamiento llega en una
+  // fase posterior; por ahora los recursos sin dueño se barren al admin bootstrap.
+  await addColumnIfMissing('workflows', 'owner_id', 'TEXT');
+  await addColumnIfMissing('credentials', 'owner_id', 'TEXT');
+  await addColumnIfMissing('data_tables', 'owner_id', 'TEXT');
+  await addColumnIfMissing('mcp_servers', 'owner_id', 'TEXT');
+
   // Data-table state engine: optional unique key column on the table + per-row derived
   // key, enabling atomic upsert/increment and idempotency. NULL row_keys stay distinct
   // in SQLite unique indexes, so non-keyed tables are unaffected.
@@ -165,7 +184,78 @@ export async function initDatabase() {
   await db.exec('CREATE INDEX IF NOT EXISTS idx_rows_table ON data_table_rows(table_id)');
   await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ux_rows_key ON data_table_rows(table_id, row_key)');
 
+  await bootstrapAdmin();
+
   console.log(`[LibreFlow Database] SQLite initialized at: ${dbPath}`);
+}
+
+/**
+ * Crea el usuario admin inicial desde el entorno (LF_ADMIN_EMAIL / LF_ADMIN_PASSWORD) si no
+ * existe, y barre los recursos sin dueño hacia él. Idempotente: re-asigna cualquier NULL en
+ * cada arranque (cubre recursos creados antes del enforcement). No hace nada sin las env vars.
+ */
+async function bootstrapAdmin(): Promise<void> {
+  const email = process.env.LF_ADMIN_EMAIL;
+  const password = process.env.LF_ADMIN_PASSWORD;
+  if (!email || !password) return;
+
+  let admin = await db.get('SELECT id FROM users WHERE email = ?', [email]);
+  if (!admin) {
+    const { hashPassword } = await import('./password.js');
+    const id = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    await db.run(
+      'INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, ?)',
+      [id, email, hashPassword(password), 'admin']
+    );
+    admin = { id };
+    console.log(`[LibreFlow Auth] Admin bootstrap creado: ${email}`);
+  }
+
+  // Barre recursos huérfanos (owner_id IS NULL) al admin.
+  for (const table of ['workflows', 'credentials', 'data_tables', 'mcp_servers']) {
+    await db.run(`UPDATE ${table} SET owner_id = ? WHERE owner_id IS NULL`, [admin.id]);
+  }
+}
+
+// --- USERS (auth multi-usuario) ---
+
+export interface UserRecord {
+  id: string;
+  email: string;
+  password_hash: string;
+  role: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** Crea un usuario. Lanza si el email ya existe (UNIQUE). */
+export async function createUser(email: string, passwordHash: string, role: 'user' | 'admin' = 'user'): Promise<UserRecord> {
+  const id = `user-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  try {
+    await db.run('INSERT INTO users (id, email, password_hash, role) VALUES (?, ?, ?, ?)', [id, email, passwordHash, role]);
+  } catch (err: any) {
+    if (/UNIQUE constraint/i.test(err?.message || '')) throw new Error(`Ya existe un usuario con el email "${email}".`);
+    throw err;
+  }
+  return { id, email, password_hash: passwordHash, role };
+}
+
+export async function getUserByEmail(email: string): Promise<UserRecord | null> {
+  return (await db.get('SELECT * FROM users WHERE email = ?', [email])) || null;
+}
+
+export async function getUserById(id: string): Promise<UserRecord | null> {
+  return (await db.get('SELECT * FROM users WHERE id = ?', [id])) || null;
+}
+
+/** Lista de usuarios SIN el hash de contraseña (para la gestión por admin). */
+export async function listUsers(): Promise<Omit<UserRecord, 'password_hash'>[]> {
+  return db.all('SELECT id, email, role, created_at, updated_at FROM users ORDER BY created_at ASC');
+}
+
+export async function countUsers(): Promise<number> {
+  const r = await db.get('SELECT COUNT(*) as c FROM users');
+  return r?.c ?? 0;
 }
 
 /**
