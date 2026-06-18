@@ -178,4 +178,5 @@ Workflow shape: `nodes[] = {id,type,name,parameters}`, `connections[] =
   cache. Interactive flow needs `LF_PUBLIC_URL` set and the redirect URI registered at the
   provider.
 - Named MCP servers use a per-server bearer token (constant-time compared); a **public**
-  (no-token) server may not expose the destructive `libreflow_*` system tools.
+  (no-token) server may not expose **any** `libreflow_*` system tools (not just the destructive
+  ones — the server rejects creating a public server with system tools enabled).
