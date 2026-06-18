@@ -35,8 +35,11 @@ import {
   saveMcpServer,
   deleteMcpServer,
   getBinary,
-  getAllWorkflowsWithGraph
+  getAllWorkflowsWithGraph,
+  getUserByEmail
 } from './db.js';
+import { verifyPassword } from './password.js';
+import { signToken } from './jwt.js';
 import { triggerManager } from './triggerManager.js';
 import { NodeRegistry } from './registry.js';
 import mcpRouter, { publicMcpRouter } from './mcp.js';
@@ -92,8 +95,29 @@ app.use(
   })
 );
 
+// Login: emite un JWT de sesión. Debe ir ANTES del guard requireAuth (es público).
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: 'email y password son obligatorios' });
+    const user = await getUserByEmail(String(email));
+    if (!user || !verifyPassword(String(password), user.password_hash)) {
+      return res.status(401).json({ error: 'Credenciales inválidas' });
+    }
+    const token = signToken({ sub: user.id, email: user.email, role: user.role });
+    return res.json({ token, user: { id: user.id, email: user.email, role: user.role } });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
 // All /api routes (including MCP) require authentication. Webhooks use HMAC instead.
 app.use('/api', requireAuth);
+
+// Usuario actual (a partir del JWT/API key resuelto por requireAuth). Requiere auth.
+app.get('/api/auth/me', (req, res) => {
+  return res.json({ user: (req as any).user || null });
+});
 app.use('/api/mcp', mcpRouter);
 
 // Named MCP servers are reachable at their own public URL (/mcp/:id/...), outside

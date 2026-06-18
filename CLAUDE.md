@@ -147,11 +147,15 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   /form/:workflowId` (public, no HMAC — browser-driven; guarded by active-flow +
   only-defined-fields + global rate limit) serve an auto-generated HTML form and run the flow
   on submit; a `respond` node gives a custom thank-you/redirect, else a default completion page.
-- **auth.ts / security.ts** — API key + webhook HMAC; `constantTimeEqual` (per-MCP-server token);
-  SSRF guard (`assertSafeUrl` + `safeFetch`, which re-validates every redirect hop),
-  `isUnsafeKey`, `rateLimit` (evicts expired windows), `cronTooFrequent`. httpRequest/oauth2
-  use `safeFetch`; httpRequest reads the body capped (`readResponseCapped`, `binary.ts`) to
-  avoid OOM on huge/lying responses.
+- **auth.ts / security.ts / jwt.ts / password.ts** — `requireAuth` accepts a **user JWT**
+  (`jwt.ts`: HS256 hand-rolled, `LF_JWT_SECRET`) or the global `LF_API_KEY` (admin break-glass),
+  and attaches `req.user` (`{id,email,role}`); webhook HMAC; `constantTimeEqual` (per-MCP-server
+  token); SSRF guard (`assertSafeUrl` + `safeFetch`, which re-validates every redirect hop),
+  `isUnsafeKey`, `rateLimit`, `cronTooFrequent`. httpRequest/oauth2 use `safeFetch`; httpRequest
+  reads the body capped (`readResponseCapped`, `binary.ts`). **Multi-user auth (in progress):**
+  `password.ts` (scrypt) + `users` table + `owner_id`; `POST /api/auth/login` issues the JWT,
+  `GET /api/auth/me` returns the current user. **No ownership enforcement yet** (F2) — every user
+  still sees all resources; `req.user` is resolved but not used for filtering.
 - **mcp.ts** — MCP server **and** client, via the official SDK (`@modelcontextprotocol/sdk`).
   `dispatchMcpRpc(body, scope)` is the single JSON-RPC source of truth (scope = which
   workflows + whether the `libreflow_*` system tools are exposed). Transports: **Streamable
