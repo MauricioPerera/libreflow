@@ -54,6 +54,7 @@ function dataResult(id: any, data: any) {
 }
 import { NodeRegistry } from './registry.js';
 import { assertSafeUrl, safeFetch } from './security.js';
+import { validateWorkflow as validateWorkflowCore } from './flowValidate.js';
 import { constantTimeEqual } from './auth.js';
 import { triggerManager } from './triggerManager.js';
 import { Server as McpSdkServer } from '@modelcontextprotocol/sdk/server/index.js';
@@ -96,174 +97,13 @@ export interface ValidationIssue {
 }
 
 export function validateWorkflow(nodes: any[], connections: any[]): { valid: boolean; issues: ValidationIssue[] } {
-  const issues: ValidationIssue[] = [];
-
-  // Rule 1: Trigger nodes
-  const triggerNodes = nodes.filter((n: any) => n.type === 'trigger');
-  if (triggerNodes.length === 0) {
-    issues.push({
-      severity: 'error',
-      message: 'El flujo de trabajo debe contener exactamente un nodo Trigger (Inicio).'
-    });
-  } else if (triggerNodes.length > 1) {
-    issues.push({
-      severity: 'error',
-      message: `El flujo contiene múltiples nodos Trigger (${triggerNodes.map(t => t.name || t.id).join(', ')}). Solo se permite uno.`
-    });
-  }
-
-  // Helper mapping
-  const nodeMap = new Map<string, any>();
-  for (const node of nodes) {
-    nodeMap.set(node.id, node);
-  }
-
-  // Rule 2 & 3: Node validation
-  for (const node of nodes) {
-    const nodeDef = NodeRegistry.getNodeType(node.type);
-    if (!nodeDef) {
-      issues.push({
-        severity: 'error',
-        nodeId: node.id,
-        nodeName: node.name,
-        message: `El tipo de nodo "${node.type}" no está registrado en el sistema.`
-      });
-      continue;
-    }
-
-    // Parameters check
-    const params = node.parameters || {};
-    if (node.type === 'httpRequest') {
-      if (!params.url || params.url.trim() === '') {
-        issues.push({
-          severity: 'error',
-          nodeId: node.id,
-          nodeName: node.name,
-          message: 'Falta el parámetro requerido "url" en el nodo Petición HTTP.'
-        });
-      }
-    } else if (node.type === 'executeWorkflow') {
-      if (!params.targetWorkflowId || params.targetWorkflowId.trim() === '') {
-        issues.push({
-          severity: 'error',
-          nodeId: node.id,
-          nodeName: node.name,
-          message: 'Falta el parámetro requerido "targetWorkflowId" en el nodo Sub-workflow.'
-        });
-      }
-    } else if (node.type === 'mcpToolCall') {
-      if (!params.serverUrl || params.serverUrl.trim() === '') {
-        issues.push({
-          severity: 'error',
-          nodeId: node.id,
-          nodeName: node.name,
-          message: 'Falta el parámetro requerido "serverUrl" en el nodo Llamada Herramienta MCP.'
-        });
-      }
-      if (!params.toolName || params.toolName.trim() === '') {
-        issues.push({
-          severity: 'error',
-          nodeId: node.id,
-          nodeName: node.name,
-          message: 'Falta el parámetro requerido "toolName" en el nodo Llamada Herramienta MCP.'
-        });
-      }
-    }
-  }
-
-  // Rule 4: Reachability (Disconnected Nodes)
-  if (triggerNodes.length === 1) {
-    const startNode = triggerNodes[0];
-    const adjacencyList = new Map<string, string[]>();
-    for (const node of nodes) {
-      adjacencyList.set(node.id, []);
-    }
-    for (const conn of connections) {
-      if (adjacencyList.has(conn.source)) {
-        adjacencyList.get(conn.source)!.push(conn.target);
-      }
-    }
-
-    const visited = new Set<string>();
-    const queue: string[] = [startNode.id];
-    visited.add(startNode.id);
-
-    while (queue.length > 0) {
-      const curr = queue.shift()!;
-      const neighbors = adjacencyList.get(curr) || [];
-      for (const neighbor of neighbors) {
-        if (!visited.has(neighbor)) {
-          visited.add(neighbor);
-          queue.push(neighbor);
-        }
-      }
-    }
-
-    for (const node of nodes) {
-      if (!visited.has(node.id)) {
-        issues.push({
-          severity: 'warning',
-          nodeId: node.id,
-          nodeName: node.name,
-          message: 'Este nodo está desconectado y nunca será ejecutado.'
-        });
-      }
-    }
-  }
-
-  // Rule 5: Cycles that don't involve "loop" nodes
-  const adj = new Map<string, string[]>();
-  for (const node of nodes) {
-    adj.set(node.id, []);
-  }
-  for (const conn of connections) {
-    const sourceNode = nodeMap.get(conn.source);
-    if (sourceNode && sourceNode.type === 'loop' && conn.sourceHandle === 'loop') {
-      continue;
-    }
-    if (adj.has(conn.source)) {
-      adj.get(conn.source)!.push(conn.target);
-    }
-  }
-
-  const visitedState = new Map<string, 'unvisited' | 'visiting' | 'visited'>();
-  for (const node of nodes) {
-    visitedState.set(node.id, 'unvisited');
-  }
-
-  let hasCycles = false;
-  function dfs(nodeId: string): boolean {
-    visitedState.set(nodeId, 'visiting');
-    const neighbors = adj.get(nodeId) || [];
-    for (const neighbor of neighbors) {
-      if (visitedState.get(neighbor) === 'visiting') {
-        return true;
-      } else if (visitedState.get(neighbor) === 'unvisited') {
-        if (dfs(neighbor)) return true;
-      }
-    }
-    visitedState.set(nodeId, 'visited');
-    return false;
-  }
-
-  for (const node of nodes) {
-    if (visitedState.get(node.id) === 'unvisited') {
-      if (dfs(node.id)) {
-        hasCycles = true;
-        break;
-      }
-    }
-  }
-
-  if (hasCycles) {
-    issues.push({
-      severity: 'error',
-      message: 'Se ha detectado una dependencia cíclica (bucle infinito) en las conexiones del flujo.'
-    });
-  }
-
-  const valid = !issues.some(issue => issue.severity === 'error');
-  return { valid, issues };
+  // Delega en el validador unificado (flowValidate) y mapea a la forma de la tool MCP
+  // ({valid, issues:[{severity}]}). Un ÚNICO conjunto de checks para la UI y el agente.
+  const r = validateWorkflowCore({ nodes, connections });
+  return {
+    valid: r.ok,
+    issues: r.issues.map(i => ({ severity: i.level, nodeId: i.nodeId, nodeName: i.nodeName, message: i.message })),
+  };
 }
 
 const SYSTEM_TOOLS = [

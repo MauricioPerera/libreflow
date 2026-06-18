@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { validateWorkflow, validateWorkflows } from '../src/flowValidate.js';
+import { validateWorkflow as mcpValidate } from '../src/mcp.js';
 import { buildExecutionLlmContext } from '../src/errorContext.js';
 
 describe('validateWorkflow', () => {
@@ -88,6 +89,26 @@ describe('validateWorkflow', () => {
   });
 });
 
+describe('unificación: el validador del MCP delega en flowValidate', () => {
+  it('ambas entradas dan el mismo veredicto y los mismos issues (mapeados)', () => {
+    const nodes = [
+      { id: 't', type: 'trigger', name: 'Start', parameters: {} },
+      { id: 'h', type: 'httpRequest', name: 'HTTP', parameters: { url: '' } }, // error: falta url
+      { id: 'x', type: 'set', name: 'Suelto', parameters: {} },               // aviso: desconectado
+    ];
+    const connections = [{ source: 't', target: 'h' }];
+
+    const core = validateWorkflow({ nodes, connections });
+    const mcp = mcpValidate(nodes, connections);
+
+    expect(mcp.valid).toBe(core.ok);
+    expect(mcp.issues.length).toBe(core.issues.length);
+    expect(mcp.issues.map(i => i.severity).sort()).toEqual(core.issues.map(i => i.level).sort());
+    expect(mcp.issues.some(i => /url/.test(i.message) && i.severity === 'error')).toBe(true);
+    expect(mcp.issues.some(i => /desconectado/.test(i.message) && i.severity === 'warning')).toBe(true);
+  });
+});
+
 describe('validateWorkflows (lote)', () => {
   it('agrega resultados y resume errores/avisos', () => {
     const r = validateWorkflows([
@@ -96,11 +117,14 @@ describe('validateWorkflows (lote)', () => {
         { id: 't', type: 'trigger', name: 'Start', parameters: {} },
         { id: 'l', type: 'log', name: 'Log', parameters: { message: '{{ $node.NoExiste.output.x }}' } },
       ], connections: [{ source: 't', target: 'l' }] },
-      { id: 'warn', name: 'Aviso', nodes: [{ id: 'a', type: 'set', name: 'S', parameters: {} }], connections: [] },
+      { id: 'warn', name: 'Aviso', nodes: [
+        { id: 't', type: 'trigger', name: 'Start', parameters: {} },
+        { id: 's', type: 'set', name: 'Suelto', parameters: {} }, // desconectado → aviso
+      ], connections: [] },
     ]);
     expect(r.summary.total).toBe(3);
-    expect(r.summary.withErrors).toBe(1);
-    expect(r.summary.withWarnings).toBeGreaterThanOrEqual(1); // 'warn' no tiene trigger
+    expect(r.summary.withErrors).toBe(1);                          // solo 'bad'
+    expect(r.summary.withWarnings).toBeGreaterThanOrEqual(1);      // 'warn' tiene un nodo desconectado
     expect(r.workflows.find(w => w.id === 'ok')!.ok).toBe(true);
     expect(r.workflows.find(w => w.id === 'bad')!.ok).toBe(false);
   });

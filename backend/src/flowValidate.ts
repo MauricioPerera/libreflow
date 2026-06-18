@@ -27,6 +27,13 @@ interface WfNode { id: string; type: string; name: string; parameters?: Record<s
 interface WfConn { source: string; target: string; sourceHandle?: string; targetHandle?: string }
 interface Wf { nodes?: WfNode[]; connections?: WfConn[] }
 
+/** Parámetros obligatorios por tipo de nodo (su ausencia impide ejecutar). */
+const REQUIRED_PARAMS: Record<string, string[]> = {
+  httpRequest: ['url'],
+  executeWorkflow: ['targetWorkflowId'],
+  mcpToolCall: ['serverUrl', 'toolName'],
+};
+
 /** Extrae los nombres de nodo referenciados en una cadena vía {{ $node.NOMBRE.output... }}. */
 function extractNodeRefs(text: string): string[] {
   const refs: string[] = [];
@@ -88,6 +95,14 @@ export function validateWorkflow(workflow: Wf): FlowValidationResult {
     }
     if (!NodeRegistry.getNodeType(n.type)) {
       issues.push({ level: 'error', code: 'UNKNOWN_TYPE', nodeId: n.id, nodeName: n.name, message: `Tipo de nodo desconocido: "${n.type}".` });
+    } else {
+      // Parámetros obligatorios ausentes (antes solo lo comprobaba el validador del MCP).
+      for (const p of REQUIRED_PARAMS[n.type] || []) {
+        const v = n.parameters?.[p];
+        if (v === undefined || v === null || String(v).trim() === '') {
+          issues.push({ level: 'error', code: 'REQUIRED_PARAM', nodeId: n.id, nodeName: n.name, message: `Falta el parámetro requerido "${p}" en el nodo "${n.name}".` });
+        }
+      }
     }
   }
 
@@ -98,9 +113,13 @@ export function validateWorkflow(workflow: Wf): FlowValidationResult {
     }
   }
 
-  // Trigger presente.
-  if (nodes.length && !nodes.some(n => n.type === 'trigger')) {
-    issues.push({ level: 'warning', code: 'NO_TRIGGER', message: 'El flujo no tiene ningún nodo "trigger" (punto de inicio).' });
+  // Trigger: exactamente uno. 0 o >1 impiden una ejecución coherente (antes el validador
+  // del MCP marcaba esto como error y el de la UI solo avisaba; ahora es un único criterio).
+  const triggers = nodes.filter(n => n.type === 'trigger');
+  if (nodes.length && triggers.length === 0) {
+    issues.push({ level: 'error', code: 'NO_TRIGGER', message: 'El flujo debe contener exactamente un nodo Trigger (Inicio).' });
+  } else if (triggers.length > 1) {
+    issues.push({ level: 'error', code: 'MULTIPLE_TRIGGERS', message: `El flujo contiene múltiples nodos Trigger (${triggers.map(t => t.name || t.id).join(', ')}). Solo se permite uno.` });
   }
 
   // Conexiones: extremos existentes + handle de salida válido.
@@ -137,6 +156,50 @@ export function validateWorkflow(workflow: Wf): FlowValidationResult {
         });
       }
     }
+  }
+
+  // Alcanzabilidad desde el único trigger (BFS). Nodos desconectados → aviso.
+  if (triggers.length === 1) {
+    const adjacency = new Map<string, string[]>();
+    for (const n of nodes) adjacency.set(n.id, []);
+    for (const c of connections) if (adjacency.has(c.source)) adjacency.get(c.source)!.push(c.target);
+    const visited = new Set<string>([triggers[0].id]);
+    const queue = [triggers[0].id];
+    while (queue.length) {
+      const cur = queue.shift()!;
+      for (const nb of adjacency.get(cur) || []) if (!visited.has(nb)) { visited.add(nb); queue.push(nb); }
+    }
+    for (const n of nodes) {
+      if (!visited.has(n.id)) {
+        issues.push({ level: 'warning', code: 'UNREACHABLE', nodeId: n.id, nodeName: n.name, message: 'Este nodo está desconectado y nunca será ejecutado.' });
+      }
+    }
+  }
+
+  // Ciclos que NO pasan por el handle 'loop' de un nodo loop (esos son retroalimentación legítima).
+  const cyc = new Map<string, string[]>();
+  for (const n of nodes) cyc.set(n.id, []);
+  for (const c of connections) {
+    const src = byId.get(c.source);
+    if (src && src.type === 'loop' && c.sourceHandle === 'loop') continue;
+    if (cyc.has(c.source)) cyc.get(c.source)!.push(c.target);
+  }
+  const state = new Map<string, 0 | 1 | 2>(); // 0=sin visitar, 1=en pila, 2=hecho
+  for (const n of nodes) state.set(n.id, 0);
+  const dfs = (id: string): boolean => {
+    state.set(id, 1);
+    for (const nb of cyc.get(id) || []) {
+      const s = state.get(nb);
+      if (s === 1) return true;
+      if (s === 0 && dfs(nb)) return true;
+    }
+    state.set(id, 2);
+    return false;
+  };
+  let hasCycle = false;
+  for (const n of nodes) { if (state.get(n.id) === 0 && dfs(n.id)) { hasCycle = true; break; } }
+  if (hasCycle) {
+    issues.push({ level: 'error', code: 'CYCLE', message: 'Se ha detectado una dependencia cíclica (bucle infinito) en las conexiones del flujo.' });
   }
 
   const errors = issues.filter(i => i.level === 'error').length;
