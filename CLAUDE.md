@@ -154,8 +154,13 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   `isUnsafeKey`, `rateLimit`, `cronTooFrequent`. httpRequest/oauth2 use `safeFetch`; httpRequest
   reads the body capped (`readResponseCapped`, `binary.ts`). **Multi-user auth (in progress):**
   `password.ts` (scrypt) + `users` table + `owner_id`; `POST /api/auth/login` issues the JWT,
-  `GET /api/auth/me` returns the current user. **No ownership enforcement yet** (F2) — every user
-  still sees all resources; `req.user` is resolved but not used for filtering.
+  `GET /api/auth/me` returns the current user. Ownership: `assertOwnership(resOwner,reqUser,isAdmin)`
+  + `owner_id` set on create (F2a). **Execution isolation (F2b):** the executor threads the run's
+  `ownerId`/`isAdmin` (manual run = `req.user`; triggered = flow `owner_id`) into `execMeta`, and
+  `resolveCredentialAuth(credId, ownerId, isAdmin)` refuses a credential whose `owner_id` ≠ the
+  flow owner (admin exempt; flows without an owner are not enforced → single-tenant back-compat).
+  Sub-workflows must share the owner. **Pending: route-level read/list scoping (F2c) + global-MCP
+  per-user scoping (F2-MCP)** — until those land, the API still lists across users.
 - **mcp.ts** — MCP server **and** client, via the official SDK (`@modelcontextprotocol/sdk`).
   `dispatchMcpRpc(body, scope)` is the single JSON-RPC source of truth (scope = which
   workflows + whether the `libreflow_*` system tools are exposed). Transports: **Streamable

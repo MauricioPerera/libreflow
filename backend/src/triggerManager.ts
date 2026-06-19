@@ -93,6 +93,7 @@ class TriggerManager {
           port: p.imapPort ? Number(p.imapPort) : undefined,
           secure: p.imapSecure !== false,
           credentialId: p.credentialId,
+          ownerId: (workflow as any).owner_id ?? null,
         });
         continue;
       }

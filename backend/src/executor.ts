@@ -12,6 +12,11 @@ export interface ExecuteOptions {
   usePinData?: boolean;
   // "Re-run from a node": replay reusing cached outputs except the target + its descendants.
   resume?: ResumeState;
+  // F2b (aislamiento): dueño bajo el que corre la ejecución y si es admin. En runs manuales lo
+  // fija el usuario autenticado (req.user); en runs disparados (webhook/cron/stream) se deriva
+  // del owner del flujo. La resolución de credenciales se acota a este dueño.
+  ownerId?: string | null;
+  isAdmin?: boolean;
 }
 
 // Per-workflow serialization: chains executions of the same workflow id so concurrent
@@ -81,7 +86,14 @@ async function runWorkflowAndRecord(
   }
 
   const engine = new WorkflowEngine();
-  const report = await engine.execute(workflow, payload, { executionId, usePinData: options.usePinData }, options.resume);
+  // F2b: el dueño de ejecución lo fija el caller (run manual = req.user) o, en su defecto, el
+  // owner del flujo (runs disparados: webhook/cron/stream). Acota la resolución de credenciales.
+  const execOwnerId = options.ownerId !== undefined ? options.ownerId : ((workflow as any).owner_id ?? null);
+  const report = await engine.execute(
+    workflow, payload,
+    { executionId, usePinData: options.usePinData, ownerId: execOwnerId, isAdmin: options.isAdmin ?? false },
+    options.resume
+  );
 
   // A `wait` node suspended the run: persist it as 'waiting' + a pending-resume record,
   // and stop here. POST /hooks/resume/:token continues it later.
@@ -148,7 +160,8 @@ export async function resumeWorkflowAndRecord(
 
   const { workflow, priorResults, initialPayload } = pending.state;
   const engine = new WorkflowEngine();
-  const report = await engine.execute(workflow, initialPayload || {}, { executionId: pending.execution_id }, {
+  // Resume (vía /hooks/resume, sin usuario): corre como el dueño del flujo.
+  const report = await engine.execute(workflow, initialPayload || {}, { executionId: pending.execution_id, ownerId: (workflow as any).owner_id ?? null, isAdmin: false }, {
     waitNodeId: pending.wait_node_id,
     resumePayload,
     priorResults,

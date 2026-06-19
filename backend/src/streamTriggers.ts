@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 import mqtt from 'mqtt';
 import { ImapFlow } from 'imapflow';
-import { getWorkflowById, getCredentialById } from './db.js';
+import { getWorkflowById, getCredentialById, assertOwnership } from './db.js';
 import { executeWorkflowAndRecord, execStack } from './executor.js';
 import { triggerContext } from './dataTableEvents.js';
 import { assertSafeUrl, safeFetch } from './security.js';
@@ -30,6 +30,7 @@ export interface StreamTriggerConfig {
   port?: number;         // imap (default 993)
   secure?: boolean;      // imap (default true)
   credentialId?: string;
+  ownerId?: string | null; // F2b: dueño del flujo; acota la credencial de conexión del trigger
 }
 
 type OnMessage = (msg: any) => void;
@@ -81,9 +82,13 @@ async function guardUrl(rawUrl: string): Promise<void> {
 }
 
 /** Carga credenciales usuario/contraseña (basicAuth) para MQTT / IMAP. */
-async function basicCreds(credentialId?: string): Promise<{ username?: string; password?: string }> {
+async function basicCreds(credentialId?: string, ownerId?: string | null): Promise<{ username?: string; password?: string }> {
   if (!credentialId) return {};
   const cred = await getCredentialById(credentialId);
+  // F2b: si el flujo tiene dueño, la credencial del trigger debe ser suya.
+  if (ownerId && cred && !assertOwnership((cred as any).owner_id, ownerId, false)) {
+    throw new Error(`La credencial "${credentialId}" no pertenece al dueño del flujo (aislamiento multi-usuario).`);
+  }
   if (cred?.type === 'basicAuth' && cred.data) {
     return { username: cred.data.user, password: cred.data.password };
   }
@@ -104,7 +109,7 @@ function appendQuery(url: string, query: Record<string, string>): string {
 /** SSE sobre fetch nativo (sin dependencias). Lee el stream y parsea eventos. */
 const connectSse: ConnectFn = async (cfg, onMessage, onClosed) => {
   if (!cfg.url) throw new Error('SSE trigger requiere url');
-  const { headers, query } = await resolveCredentialAuth(cfg.credentialId);
+  const { headers, query } = await resolveCredentialAuth(cfg.credentialId, cfg.ownerId);
   const url = appendQuery(cfg.url, query);
 
   const controller = new AbortController();
@@ -147,7 +152,7 @@ const connectSse: ConnectFn = async (cfg, onMessage, onClosed) => {
 /** WebSocket (ws). */
 const connectWebSocket: ConnectFn = async (cfg, onMessage, onClosed) => {
   if (!cfg.url) throw new Error('WebSocket trigger requiere url');
-  const { headers, query } = await resolveCredentialAuth(cfg.credentialId);
+  const { headers, query } = await resolveCredentialAuth(cfg.credentialId, cfg.ownerId);
   const url = appendQuery(cfg.url, query);
   await guardUrl(url);
 
@@ -165,7 +170,7 @@ const connectMqtt: ConnectFn = async (cfg, onMessage, onClosed) => {
   if (!cfg.url) throw new Error('MQTT trigger requiere url');
   if (!cfg.topic) throw new Error('MQTT trigger requiere topic');
   await guardUrl(cfg.url);
-  const { username, password } = await basicCreds(cfg.credentialId);
+  const { username, password } = await basicCreds(cfg.credentialId, cfg.ownerId);
 
   // reconnectPeriod: 0 → desactiva la reconexión interna; el manager aplica su backoff.
   const client = mqtt.connect(cfg.url, { username, password, reconnectPeriod: 0, connectTimeout: 15000 });
@@ -182,7 +187,7 @@ const connectMqtt: ConnectFn = async (cfg, onMessage, onClosed) => {
 const connectImap: ConnectFn = async (cfg, onMessage, onClosed) => {
   if (!cfg.host) throw new Error('IMAP trigger requiere host');
   await assertSafeUrl(`https://${cfg.host}`);
-  const { username, password } = await basicCreds(cfg.credentialId);
+  const { username, password } = await basicCreds(cfg.credentialId, cfg.ownerId);
   if (!username || !password) throw new Error('IMAP trigger requiere una credencial basicAuth (usuario/contraseña)');
 
   const client = new ImapFlow({
