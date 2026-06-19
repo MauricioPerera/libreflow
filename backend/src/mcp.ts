@@ -463,20 +463,20 @@ export interface McpScope {
   // Expone las data-tables como RESOURCES MCP de solo lectura. Solo en el server global
   // (tras auth); los named servers son exposiciones curadas de tools (v1: sin resources).
   exposeResources?: boolean;
-  // F2-MCP: el server global expone solo los flujos del usuario autenticado (admin = todos).
-  // Para `workflowIds: null` (global), `ownerId`/`isAdmin` acotan getActiveWorkflows.
+  // F2-MCP/F3: acota los flujos expuestos al dueño del scope (server global → usuario
+  // autenticado; named server / toolset del aiAgent → dueño del server/flujo; admin = todos).
+  // `ownerId === undefined` ⇒ sin scoping (single-tenant / back-compat).
   ownerId?: string | null;
   isAdmin?: boolean;
 }
 
 async function resolveScopedWorkflows(scope: McpScope): Promise<any[]> {
-  if (scope.workflowIds === null) {
-    const active = await getActiveWorkflows();
-    // F2-MCP: si hay dueño en el scope, filtra a los suyos (admin ve todos).
-    if (scope.ownerId === undefined) return active;
-    return active.filter((w: any) => assertOwnership(w.owner_id ?? null, scope.ownerId ?? null, scope.isAdmin ?? false));
-  }
-  return await getWorkflowsByIds(scope.workflowIds);
+  const list = scope.workflowIds === null
+    ? await getActiveWorkflows()
+    : await getWorkflowsByIds(scope.workflowIds);
+  // Filtra por dueño en AMBAS rutas (global y named) cuando el scope lo trae.
+  if (scope.ownerId === undefined) return list;
+  return list.filter((w: any) => assertOwnership(w.owner_id ?? null, scope.ownerId ?? null, scope.isAdmin ?? false));
 }
 
 /**
@@ -1090,6 +1090,9 @@ publicMcpRouter.post('/:serverId/message', async (req, res) => {
   const { status, payload } = await dispatchMcpRpc(req.body, {
     workflowIds: server.workflow_ids,
     exposeSystemTools: server.expose_system_tools,
+    // F3: un named server solo expone flujos de SU dueño (sin dueño → sin scoping, back-compat).
+    ownerId: server.owner_id ?? undefined,
+    isAdmin: false,
   });
   return res.status(status).json(payload);
 });
@@ -1107,6 +1110,9 @@ async function handleNamedStreamable(req: any, res: Response) {
   return handleStreamableHttp(req, res, {
     workflowIds: server.workflow_ids,
     exposeSystemTools: server.expose_system_tools,
+    // F3: un named server solo expone flujos de SU dueño (sin dueño → sin scoping, back-compat).
+    ownerId: server.owner_id ?? undefined,
+    isAdmin: false,
   });
 }
 

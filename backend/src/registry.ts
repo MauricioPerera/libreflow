@@ -1597,7 +1597,14 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       const { getMcpServerById } = await import('./db.js');
       const server = await getMcpServerById(mcpServerId);
       if (!server) throw new Error(`AI Agent error: MCP server "${mcpServerId}" not found`);
-      const scope = { workflowIds: server.workflow_ids, exposeSystemTools: server.expose_system_tools };
+      // F3: el toolset propio del agente hereda el dueño del flujo (cruza con F2b) — solo puede
+      // invocar flujos del mismo dueño. Sin dueño (single-tenant) → sin scoping.
+      const scope = {
+        workflowIds: server.workflow_ids,
+        exposeSystemTools: server.expose_system_tools,
+        ownerId: execMeta?.ownerId,
+        isAdmin: execMeta?.isAdmin,
+      };
       const listed = await dispatchMcpRpc({ jsonrpc: '2.0', id: 0, method: 'tools/list' }, scope);
       openaiTools = toOpenAI(listed.payload?.result?.tools || []);
       callTool = async (name, args) => {
