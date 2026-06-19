@@ -630,6 +630,15 @@ app.get('/api/credentials/:id', async (req, res) => {
   }
 });
 
+// OAuth2: al editar una credencial ya conectada, el formulario no reenvía los tokens (la GET no
+// los expone). Conserva accessToken/refreshToken/expiresAt de la existente para no desconectarla.
+function preserveOAuthTokens(data: any, existing: any): void {
+  if (!existing?.data) return;
+  for (const f of ['accessToken', 'refreshToken', 'expiresAt']) {
+    if (existing.data[f] !== undefined && data[f] === undefined) data[f] = existing.data[f];
+  }
+}
+
 app.post('/api/credentials', async (req, res) => {
   try {
     const { id, name, type, data } = req.body;
@@ -641,16 +650,7 @@ app.post('/api/credentials', async (req, res) => {
     if (existingCred && !canAccess((existingCred as any).owner_id, req)) {
       return res.status(404).json({ error: 'Credential not found' });
     }
-    // OAuth2: al editar una credencial ya conectada, el formulario no reenvía los tokens
-    // (la GET no los expone). Conserva accessToken/refreshToken/expiresAt para no desconectarla.
-    if (type === 'oauth2') {
-      const existing = await getCredentialById(id);
-      if (existing?.data) {
-        for (const f of ['accessToken', 'refreshToken', 'expiresAt']) {
-          if (existing.data[f] !== undefined && data[f] === undefined) data[f] = existing.data[f];
-        }
-      }
-    }
+    if (type === 'oauth2') preserveOAuthTokens(data, existingCred);
     await saveCredential(id, name, type, data, (req as any).user?.id);
     return res.json({ success: true, message: 'Credential saved successfully' });
   } catch (err: any) {
@@ -944,6 +944,46 @@ app.get('/oauth/callback', async (req, res) => {
   }
 });
 
+/** Escribe una respuesta HTTP declarada por un nodo `respond` (status/headers/contentType/body). */
+function emitHttpResponseIntent(res: express.Response, intent: { status: number; headers: Record<string, string>; contentType: string; body: any }) {
+  const { status, headers, contentType, body } = intent;
+  res.status(status);
+  for (const [k, v] of Object.entries(headers || {})) res.setHeader(k, v);
+  const hasCT = Object.keys(headers || {}).some(k => k.toLowerCase() === 'content-type');
+  if (contentType && !hasCT) res.type(contentType);
+  const out = (body !== null && typeof body === 'object') ? JSON.stringify(body) : (body ?? '');
+  return res.send(out);
+}
+
+const SYNC_TIMEOUT_SENTINEL = Symbol('timed-out');
+
+/** Ejecuta el flujo de forma síncrona acotada por timeout. Devuelve el report o el centinela. */
+async function runWorkflowSyncBounded(workflow: any, payload: any, executionId: string): Promise<any> {
+  const syncTimeout = Math.max(1000, Number(process.env.LF_WEBHOOK_SYNC_TIMEOUT_MS) || 30000);
+  return Promise.race([
+    executeWorkflowAndRecord(workflow, payload, { executionId }),
+    new Promise(r => setTimeout(() => r(SYNC_TIMEOUT_SENTINEL), syncTimeout)),
+  ]);
+}
+
+/** Emite la respuesta de un webhook síncrono según responseMode (suspended/respondNode/lastNode). */
+function sendSyncWebhookResult(res: express.Response, report: any, responseMode: string, executionId: string) {
+  // Un nodo `wait` suspendió: no hay respuesta síncrona definitiva.
+  if (report.suspended) {
+    return res.status(202).json({ success: true, suspended: true, resumeToken: report.resumeToken, executionId });
+  }
+  if (responseMode === 'respondNode') {
+    if (report.httpResponse) return emitHttpResponseIntent(res, report.httpResponse);
+    // respondNode pero ningún nodo "Responder" llegó a ejecutarse.
+    return res.status(report.success ? 200 : 500).json({ success: report.success, message: 'No respond node was reached', executionId });
+  }
+  // lastNode: devuelve la salida del último nodo ejecutado con éxito.
+  const successResults = Object.values(report.nodeResults).filter((r: any) => r.status === 'success' && r.endTime) as any[];
+  successResults.sort((a, b) => (a.endTime! < b.endTime! ? -1 : a.endTime! > b.endTime! ? 1 : 0));
+  const last = successResults[successResults.length - 1];
+  return res.status(report.success ? 200 : 500).json(last ? last.output : { success: report.success });
+}
+
 // WEBHOOK TRIGGER ENDPOINT (Supports all HTTP methods)
 app.all('/hooks/:workflowId', async (req, res) => {
   const { workflowId } = req.params;
@@ -1006,43 +1046,11 @@ app.all('/hooks/:workflowId', async (req, res) => {
 
     // Modos síncronos: espera la ejecución (con timeout) y responde a medida. Si salta el
     // timeout, la ejecución sigue en segundo plano y se persiste igualmente.
-    const syncTimeout = Math.max(1000, Number(process.env.LF_WEBHOOK_SYNC_TIMEOUT_MS) || 30000);
-    const TIMED_OUT = Symbol('timed-out');
-    const raced = await Promise.race([
-      executeWorkflowAndRecord(workflow, payload, { executionId }),
-      new Promise<typeof TIMED_OUT>(r => setTimeout(() => r(TIMED_OUT), syncTimeout)),
-    ]);
-
-    if (raced === TIMED_OUT) {
+    const raced = await runWorkflowSyncBounded(workflow, payload, executionId);
+    if (raced === SYNC_TIMEOUT_SENTINEL) {
       return res.status(504).json({ error: 'Workflow did not respond in time', executionId });
     }
-
-    const report = raced as Awaited<ReturnType<typeof executeWorkflowAndRecord>>;
-
-    // Un nodo `wait` suspendió la ejecución: no hay respuesta síncrona definitiva.
-    if (report.suspended) {
-      return res.status(202).json({ success: true, suspended: true, resumeToken: report.resumeToken, executionId });
-    }
-
-    if (responseMode === 'respondNode') {
-      if (report.httpResponse) {
-        const { status, headers, contentType, body } = report.httpResponse;
-        res.status(status);
-        for (const [k, v] of Object.entries(headers || {})) res.setHeader(k, v);
-        const hasCT = Object.keys(headers || {}).some(k => k.toLowerCase() === 'content-type');
-        if (contentType && !hasCT) res.type(contentType);
-        const out = (body !== null && typeof body === 'object') ? JSON.stringify(body) : (body ?? '');
-        return res.send(out);
-      }
-      // responseMode = respondNode pero ningún nodo "Responder" llegó a ejecutarse.
-      return res.status(report.success ? 200 : 500).json({ success: report.success, message: 'No respond node was reached', executionId });
-    }
-
-    // responseMode === 'lastNode': devuelve la salida del último nodo ejecutado con éxito.
-    const successResults = Object.values(report.nodeResults).filter(r => r.status === 'success' && r.endTime);
-    successResults.sort((a, b) => (a.endTime! < b.endTime! ? -1 : a.endTime! > b.endTime! ? 1 : 0));
-    const last = successResults[successResults.length - 1];
-    return res.status(report.success ? 200 : 500).json(last ? last.output : { success: report.success });
+    return sendSyncWebhookResult(res, raced, responseMode, executionId);
 
   } catch (err: any) {
     console.error(`[Webhook Trigger Router Error] Failed to dispatch workflow ${workflowId}:`, err);
@@ -1109,25 +1117,14 @@ app.post('/form/:workflowId', express.urlencoded({ extended: true }), async (req
     const payload = { form: formData, query: req.query, source: 'form', timestamp: new Date().toISOString() };
     const executionId = `exec-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
-    const syncTimeout = Math.max(1000, Number(process.env.LF_WEBHOOK_SYNC_TIMEOUT_MS) || 30000);
-    const TIMED_OUT = Symbol('timed-out');
-    const raced = await Promise.race([
-      executeWorkflowAndRecord(workflow, payload, { executionId }),
-      new Promise<typeof TIMED_OUT>(r => setTimeout(() => r(TIMED_OUT), syncTimeout)),
-    ]);
-    if (raced === TIMED_OUT) return res.status(504).type('text/plain').send('El flujo tardó demasiado en responder.');
+    const raced = await runWorkflowSyncBounded(workflow, payload, executionId);
+    if (raced === SYNC_TIMEOUT_SENTINEL) return res.status(504).type('text/plain').send('El flujo tardó demasiado en responder.');
 
     const report = raced as Awaited<ReturnType<typeof executeWorkflowAndRecord>>;
 
     // Un nodo `respond` permite páginas de gracias / redirecciones a medida.
     if (report.httpResponse) {
-      const { status, headers, contentType, body } = report.httpResponse;
-      res.status(status);
-      for (const [k, v] of Object.entries(headers || {})) res.setHeader(k, v);
-      const hasCT = Object.keys(headers || {}).some(k => k.toLowerCase() === 'content-type');
-      if (contentType && !hasCT) res.type(contentType);
-      const out = (body !== null && typeof body === 'object') ? JSON.stringify(body) : (body ?? '');
-      return res.send(out);
+      return emitHttpResponseIntent(res, report.httpResponse);
     }
 
     if (report.suspended) {
