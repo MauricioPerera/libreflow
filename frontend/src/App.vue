@@ -169,184 +169,34 @@
         </VueFlow>
       </section>
 
-      <!-- Right Panel: Configurations or Execution History -->
-      <aside :class="['right-sidebar', { collapsed: isRightSidebarCollapsed }]">
-        <!-- Floating tab-toggle button sticking out of the sidebar to collapse/expand it -->
-        <button 
-          @click="isRightSidebarCollapsed = !isRightSidebarCollapsed" 
-          :class="['sidebar-toggle-btn', { collapsed: isRightSidebarCollapsed }]"
-          :title="isRightSidebarCollapsed ? 'Mostrar parámetros' : 'Ocultar parámetros'"
-        >
-          <span v-if="isRightSidebarCollapsed">◀</span>
-          <span v-else>▶</span>
-        </button>
-
-        <div class="right-sidebar-content">
-          <!-- Tab Headers -->
-          <div class="sidebar-tabs">
-            <button 
-              @click="activeTab = 'config'" 
-              :class="['tab-btn', { active: activeTab === 'config' }]"
-            >
-              🔧 Parámetros
-            </button>
-            <button 
-              @click="activeTab = 'history'" 
-              :class="['tab-btn', { active: activeTab === 'history' }]"
-              :disabled="!activeWorkflowId"
-            >
-              ⏳ Historial
-            </button>
-            <button 
-              @click="activeTab = 'versions'; fetchWorkflowVersions(activeWorkflowId)" 
-              :class="['tab-btn', { active: activeTab === 'versions' }]"
-              :disabled="!activeWorkflowId"
-            >
-              📜 Versiones
-            </button>
-          </div>
-
-          <!-- Tab Content: Property Panel -->
-          <div v-show="activeTab === 'config'" class="tab-content-container">
-            <NodeConfigPanel
-              v-if="selectedNode"
-              :key="selectedNode.id + '-' + panelUpdateKey"
-              :node="selectedNode"
-              :result="getExecutionResultForNode(selectedNode.id)"
-              :workflowId="activeWorkflowId"
-              :credentialsList="credentialsList"
-              :workflowsList="savedWorkflowsList"
-              :readOnly="isPreviewMode"
-              @update-params="updateNodeParams"
-              @update-name="updateNodeName"
-              @set-pin="setNodePin"
-              @rerun="rerunFromNode"
-              @close="selectedNode = null"
-              @open-expression-editor="handleOpenExpressionEditor"
-            />
-            <div v-else class="workflow-settings-container" style="display: flex; flex-direction: column; height: 100%;">
-              <div class="config-header">
-                <div>
-                  <h3 class="config-title">⚙️ Ajustes del Flujo</h3>
-                  <span class="node-subtitle">Opciones globales del flujo</span>
-                </div>
-              </div>
-              <div class="config-body" style="padding: 16px; display: flex; flex-direction: column; gap: 16px;">
-                <div class="config-group">
-                  <label class="config-label">Flujo de Error (Global)</label>
-                  <p class="config-desc" style="margin-top: 4px; margin-bottom: 8px; font-size: 12px; color: hsl(var(--text-muted)); line-height: 1.4;">
-                    Selecciona un flujo de contingencia que se ejecutará automáticamente si la ejecución de este flujo falla.
-                  </p>
-                  <select v-model="onErrorWorkflowId" class="config-select" style="width: 100%;">
-                    <option value="">-- Ninguno --</option>
-                    <option 
-                      v-for="flow in savedWorkflowsList.filter(w => w.id !== activeWorkflowId)" 
-                      :key="flow.id" 
-                      :value="flow.id"
-                    >
-                      {{ flow.name }}
-                    </option>
-                  </select>
-                </div>
-                <div class="config-info-box" style="margin-top: 8px; background: hsla(var(--text-primary) / 0.03); border: 1px solid hsl(var(--border-color)); padding: 12px; border-radius: var(--rounded-md);">
-                  <div style="font-size: 12px; color: hsl(var(--text-secondary)); font-weight: 500; display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
-                    <span>ℹ️</span> Payload del Error
-                  </div>
-                  <p style="font-size: 12px; color: hsl(var(--text-muted)); margin: 0; line-height: 1.4;">
-                    El flujo de contingencia recibirá un payload inicial conteniendo: <code>executionId</code>, <code>workflowId</code>, <code>workflowName</code>, <code>error</code> y <code>failedNodeName</code>.
-                  </p>
-                </div>
-              </div>
-              <div class="empty-sidebar-message" style="height: auto; padding: 20px 40px; border-top: 1px dashed hsl(var(--border-color)); margin-top: auto; flex-grow: 1;">
-                Selecciona un nodo del lienzo para configurar sus parámetros individuales.
-              </div>
-            </div>
-          </div>
-
-          <!-- Tab Content: Execution History -->
-          <div v-show="activeTab === 'history'" class="tab-content-container execution-history-list">
-            <div class="config-header" style="border-bottom: none; padding-bottom: 0;">
-              <h3 class="config-title">Historial de Ejecuciones</h3>
-            </div>
-            
-            <div class="history-list-body">
-              <div 
-                v-for="exec in workflowExecutionsList" 
-                :key="exec.id" 
-                @click="loadPastExecution(exec.id)"
-                :class="['history-item', exec.status, { active: activeExecutionId === exec.id }]"
-              >
-                <div class="history-item-header">
-                  <span class="history-status-indicator">●</span>
-                  <span class="history-item-id">{{ exec.id }}</span>
-                </div>
-                <div class="history-item-time">
-                  {{ formatFullDate(exec.executed_at) }}
-                </div>
-              </div>
-              
-              <div v-if="workflowExecutionsList.length === 0" class="empty-history-message">
-                No hay ejecuciones registradas para este flujo. Ejecuta el flujo para ver los reportes.
-              </div>
-            </div>
-          </div>
-
-          <!-- Tab Content: Version History -->
-          <div v-show="activeTab === 'versions'" class="tab-content-container execution-history-list">
-            <div class="config-header" style="border-bottom: none; padding-bottom: 0;">
-              <h3 class="config-title">Historial de Versiones</h3>
-            </div>
-            
-            <div class="history-list-body">
-              <div 
-                v-for="ver in workflowVersionsList" 
-                :key="ver.id" 
-                :class="['history-item', { active: previewedVersionNumber === ver.version }]"
-                style="cursor: default; display: flex; flex-direction: column; gap: 8px; padding: 12px; border-bottom: 1px solid hsl(var(--border-color));"
-              >
-                <div style="display: flex; align-items: center; justify-content: space-between; width: 100%;">
-                  <span style="font-weight: 600; color: hsl(var(--text-primary)); font-size: 13px;">
-                    Versión #{{ ver.version }}
-                  </span>
-                  <span style="font-size: 12px; color: hsl(var(--text-muted));">
-                    {{ formatFullDate(ver.created_at) }}
-                  </span>
-                </div>
-                
-                <div style="display: flex; gap: 8px; margin-top: 4px; width: 100%;">
-                  <button 
-                    v-if="previewedVersionNumber !== ver.version"
-                    @click="previewWorkflowVersion(ver.version)"
-                    class="btn btn-secondary" 
-                    style="flex: 1; padding: 6px; font-size: 12px; text-align: center; margin: 0;"
-                  >
-                    Previsualizar
-                  </button>
-                  <button 
-                    v-else
-                    @click="cancelPreview"
-                    class="btn btn-secondary" 
-                    style="flex: 1; padding: 6px; font-size: 12px; text-align: center; border-color: hsl(var(--text-muted)); color: hsl(var(--text-secondary)); margin: 0;"
-                  >
-                    Volver
-                  </button>
-                  <button 
-                    @click="restoreWorkflowVersion(ver.version)"
-                    class="btn btn-primary" 
-                    style="flex: 1; padding: 6px; font-size: 12px; text-align: center; background: hsl(var(--color-primary)); margin: 0;"
-                  >
-                    Restaurar
-                  </button>
-                </div>
-              </div>
-              
-              <div v-if="workflowVersionsList.length === 0" class="empty-history-message">
-                No hay versiones registradas para este flujo. Se creará una versión automáticamente al guardar.
-              </div>
-            </div>
-          </div>
-        </div>
-      </aside>
+      <!-- Panel derecho: parámetros del nodo / historial / versiones -->
+      <EditorSidebar
+        v-model:collapsed="isRightSidebarCollapsed"
+        :active-tab="activeTab"
+        :selected-node="selectedNode"
+        :panel-update-key="panelUpdateKey"
+        :node-result="selectedNode ? getExecutionResultForNode(selectedNode.id) : null"
+        :workflow-id="activeWorkflowId"
+        :credentials-list="credentialsList"
+        :workflows-list="savedWorkflowsList"
+        :read-only="isPreviewMode"
+        v-model:on-error-workflow-id="onErrorWorkflowId"
+        :executions="workflowExecutionsList"
+        :active-execution-id="activeExecutionId"
+        :versions="workflowVersionsList"
+        :previewed-version="previewedVersionNumber"
+        @change-tab="onChangeRightTab"
+        @update-params="updateNodeParams"
+        @update-name="updateNodeName"
+        @set-pin="setNodePin"
+        @rerun="rerunFromNode"
+        @close="selectedNode = null"
+        @open-expression-editor="handleOpenExpressionEditor"
+        @load-past-execution="loadPastExecution"
+        @preview-version="previewWorkflowVersion"
+        @cancel-preview="cancelPreview"
+        @restore-version="restoreWorkflowVersion"
+      />
     </main>
   </div>
 
@@ -443,7 +293,7 @@ import { ref, onMounted, provide, computed } from 'vue';
 import { VueFlow, useVueFlow } from '@vue-flow/core';
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
-import NodeConfigPanel from './components/NodeConfigPanel.vue';
+import EditorSidebar from './components/EditorSidebar.vue';
 import ExpressionEditor from './components/ExpressionEditor.vue';
 import CustomNode from './components/CustomNode.vue';
 import CredentialsView from './components/CredentialsView.vue';
@@ -465,7 +315,7 @@ import DashboardSidebar from './components/DashboardSidebar.vue';
 import LoginView from './components/LoginView.vue';
 import UsersAdminView from './components/UsersAdminView.vue';
 import { getToken, setToken, clearToken, authEvents } from './auth';
-import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
+import { statusLabel, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
 // Sesión (multi-usuario). null = no autenticado → se muestra el login.
 const currentUser = ref<{ id: string; email?: string; role: string } | null>(null);
@@ -1593,6 +1443,12 @@ const onSelectSubView = (view: string) => {
   else if (view === 'credentials') fetchCredentials();
   else if (view === 'datatables') fetchDataTables();
   else if (view === 'mcpservers') { fetchMcpServers(); fetchSavedWorkflows(); }
+};
+
+// Cambia la pestaña del panel derecho del editor; la de versiones recarga el historial.
+const onChangeRightTab = (tab: 'config' | 'history' | 'versions') => {
+  activeTab.value = tab;
+  if (tab === 'versions') fetchWorkflowVersions(activeWorkflowId.value);
 };
 
 onMounted(async () => {
