@@ -318,6 +318,9 @@ import { getToken, setToken, clearToken, authEvents } from './auth';
 import { apiGetJson } from './api';
 import { useCredentials } from './composables/useCredentials';
 import { useExecutions } from './composables/useExecutions';
+import { useNodeTypes } from './composables/useNodeTypes';
+import { useMcpServers } from './composables/useMcpServers';
+import { useDataTables } from './composables/useDataTables';
 import { statusLabel, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
 // Sesión (multi-usuario). null = no autenticado → se muestra el login.
@@ -328,8 +331,8 @@ const isAdmin = computed(() => currentUser.value?.role === 'admin');
 const currentView = ref<'dashboard' | 'editor'>('dashboard');
 const activeSubView = ref<'workflows' | 'executions' | 'credentials' | 'datatables' | 'mcpservers' | 'users'>('workflows');
 
-// MCP servers state
-const mcpServersList = ref<any[]>([]);
+// MCP servers state (lista + fetch en el composable; el CRUD se queda abajo)
+const { mcpServersList, fetchMcpServers } = useMcpServers();
 const showMcpServerModal = ref(false);
 const editingMcpServerId = ref<string | null>(null);
 const mcpServerName = ref('');
@@ -337,8 +340,8 @@ const mcpServerWorkflowIds = ref<string[]>([]);
 const mcpServerRequireAuth = ref(true);
 const mcpServerExposeSystem = ref(false);
 
-// Data Tables state
-const dataTablesList = ref<any[]>([]);
+// Data Tables state (lista + fetch en el composable; el detalle/CRUD se queda abajo)
+const { dataTablesList, fetchDataTables } = useDataTables();
 const selectedTable = ref<any>(null);
 const selectedTableRows = ref<any[]>([]);
 const showDataTableModal = ref(false);
@@ -482,7 +485,8 @@ const copyAiContext = async () => {
 // Stores reports from the backend
 const executionReport = ref<any | null>(null);
 const nodeStatuses = ref<Record<string, 'success' | 'failed' | 'skipped' | 'running'>>({});
-const nodeTypesList = ref<any[]>([]);
+// Catálogo de tipos de nodo en el composable; se provee al árbol del editor.
+const { nodeTypesList, fetchNodeTypes } = useNodeTypes();
 
 provide('nodeTypesList', nodeTypesList);
 provide('nodeStatuses', nodeStatuses);
@@ -1122,31 +1126,7 @@ const runWorkflow = async (rerunFrom?: string) => {
   }
 };
 
-const fetchNodeTypes = async () => {
-  try {
-    nodeTypesList.value = await apiGetJson('/api/node-types');
-  } catch (err) {
-    console.error('Error fetching node types:', err);
-  }
-};
-
-const fetchDataTables = async () => {
-  try {
-    dataTablesList.value = await apiGetJson('/api/data-tables');
-  } catch (err) {
-    console.error('Error fetching data tables:', err);
-  }
-};
-
-// MCP SERVERS CRUD LOGIC
-const fetchMcpServers = async () => {
-  try {
-    mcpServersList.value = await apiGetJson('/api/mcp-servers');
-  } catch (err) {
-    console.error('Error fetching MCP servers:', err);
-  }
-};
-
+// MCP SERVERS CRUD LOGIC (la lista + fetchMcpServers viven en useMcpServers)
 const copyMcpText = async (text: string) => {
   try {
     await navigator.clipboard.writeText(text);
