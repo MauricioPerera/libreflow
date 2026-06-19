@@ -227,9 +227,10 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
 - **composables/** — extracted stateful logic (the #61 composables pass): `useCredentials`,
   `useExecutions` (`globalExecutionsList`/`workflowExecutionsList`/`activeExecutionId` +
   fetchers; `loadPastExecution` stays in App.vue — canvas-coupled), `useNodeTypes`,
-  `useMcpServers`, `useDataTables` (each owns its `*List` ref + `fetch*`; the related CRUD/detail
-  stays in App.vue). App.vue consumes them via destructuring; behavior unchanged. Each has a
-  vitest spec.
+  `useMcpServers`, `useDataTables`, `useWorkflowVersions` (versions list + preview-mode state +
+  `fetchWorkflowVersions`; the canvas-mutating preview/restore/cancel stay in App.vue). Each owns
+  its `*List` ref + `fetch*`; the related CRUD/detail/canvas logic stays in App.vue. App.vue
+  consumes them via destructuring; behavior unchanged. Each has a vitest spec.
 - **auth.ts** — session: JWT in `localStorage` + `installFetchAuth()` (called in `main.ts`
   before mount) which wraps `window.fetch` to inject `Authorization: Bearer` on `/api` calls and,
   on a `401`, clears the token and fires an `unauthorized` event (App.vue → back to login). This
