@@ -140,63 +140,21 @@
 
   <!-- EDITOR VIEW -->
   <div v-else-if="currentUser && currentView === 'editor'" class="libreflow-layout">
-    <!-- Editor Header -->
-    <header class="libreflow-header">
-      <div class="brand-section">
-        <button @click="exitEditor" class="btn btn-secondary" style="padding: 8px 14px;">
-          ← Volver
-        </button>
-        <div class="editor-title-container">
-          <input 
-            v-model="activeWorkflowName" 
-            type="text" 
-            class="editor-title-input" 
-            placeholder="Flujo sin Nombre"
-            :disabled="isPreviewMode"
-          />
-        </div>
-      </div>
-
-      <div class="action-buttons" style="display: flex; align-items: center; gap: 12px;">
-        <!-- Active Toggle Switch (Only if workflow is saved/has ID) -->
-        <div v-if="activeWorkflowId" class="workflow-active-toggle-container">
-          <span class="active-toggle-label">{{ isActiveWorkflow ? 'Activo' : 'Inactivo' }}</span>
-          <label class="switch">
-            <input type="checkbox" v-model="isActiveWorkflow" :disabled="isPreviewMode" @change="toggleWorkflowActiveState">
-            <span class="slider round"></span>
-          </label>
-        </div>
-
-        <button @click="promptSaveWorkflow" :disabled="isPreviewMode" class="btn btn-secondary" style="border-color: hsla(var(--color-primary) / 0.4); color: hsl(var(--color-primary)); margin: 0;">
-          💾 Guardar
-        </button>
-        <button
-          @click="runWorkflow()"
-          :disabled="isRunning || isPreviewMode"
-          class="btn btn-primary"
-          style="margin: 0;"
-        >
-          <span v-if="isRunning">Ejecutando...</span>
-          <span v-else>▶ Ejecutar Flujo</span>
-        </button>
-      </div>
-    </header>
-
-    <!-- Preview Mode Banner -->
-    <div v-if="isPreviewMode" class="preview-mode-banner" style="background: hsla(var(--accent-amber) / 0.15); border-bottom: 1px solid hsl(var(--accent-amber)); padding: 10px 24px; display: flex; align-items: center; justify-content: space-between; font-size: 13px; color: hsl(var(--text-primary)); z-index: 100;">
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span style="color: hsl(var(--accent-amber)); font-size: 16px;">⚠️</span>
-        <span>Estás previsualizando la <strong>Versión #{{ previewedVersionNumber }}</strong> (Modo Lectura). Las modificaciones en el lienzo están deshabilitadas.</span>
-      </div>
-      <div style="display: flex; gap: 12px;">
-        <button @click="restoreWorkflowVersion(previewedVersionNumber!)" class="btn btn-primary" style="margin: 0; padding: 6px 14px; font-size: 12px; background: hsl(var(--color-primary));">
-          Restaurar esta Versión
-        </button>
-        <button @click="cancelPreview" class="btn btn-secondary" style="margin: 0; padding: 6px 14px; font-size: 12px; border-color: hsl(var(--text-muted)); color: hsl(var(--text-secondary));">
-          Volver al Editor
-        </button>
-      </div>
-    </div>
+    <!-- Cabecera del editor + banner de preview -->
+    <EditorHeader
+      v-model:workflow-name="activeWorkflowName"
+      v-model:active="isActiveWorkflow"
+      :workflow-id="activeWorkflowId"
+      :preview-mode="isPreviewMode"
+      :running="isRunning"
+      :previewed-version="previewedVersionNumber"
+      @exit="exitEditor"
+      @toggle-active="toggleWorkflowActiveState"
+      @save="promptSaveWorkflow"
+      @run="runWorkflow()"
+      @restore="restoreWorkflowVersion"
+      @cancel-preview="cancelPreview"
+    />
 
     <!-- Editor Workspace -->
     <main class="libreflow-workspace">
@@ -544,6 +502,7 @@ import AiContextModal from './components/AiContextModal.vue';
 import CredentialModal from './components/CredentialModal.vue';
 import McpServersView from './components/McpServersView.vue';
 import NodePalette from './components/NodePalette.vue';
+import EditorHeader from './components/EditorHeader.vue';
 import LoginView from './components/LoginView.vue';
 import UsersAdminView from './components/UsersAdminView.vue';
 import { getToken, setToken, clearToken, authEvents } from './auth';
