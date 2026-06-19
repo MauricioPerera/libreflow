@@ -317,6 +317,7 @@ import UsersAdminView from './components/UsersAdminView.vue';
 import { getToken, setToken, clearToken, authEvents } from './auth';
 import { apiGetJson } from './api';
 import { useCredentials } from './composables/useCredentials';
+import { useExecutions } from './composables/useExecutions';
 import { statusLabel, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
 // Sesión (multi-usuario). null = no autenticado → se muestra el login.
@@ -374,11 +375,13 @@ const workflowVersionsList = ref<any[]>([]);
 
 // Database / Persistence States
 const savedWorkflowsList = ref<any[]>([]);
-const globalExecutionsList = ref<any[]>([]);
 const activeWorkflowId = ref<string | null>(null);
 const activeWorkflowName = ref<string>('');
-const workflowExecutionsList = ref<any[]>([]);
-const activeExecutionId = ref<string | null>(null);
+// Ejecuciones (listas global/flujo + id activa + fetchers) en el composable useExecutions.
+const {
+  globalExecutionsList, workflowExecutionsList, activeExecutionId,
+  fetchGlobalExecutions, fetchWorkflowExecutions,
+} = useExecutions();
 
 // Expression editor states
 const panelUpdateKey = ref(0);
@@ -830,24 +833,6 @@ const fetchSavedWorkflows = async () => {
   } catch (err) {
     console.error('Error fetching workflows:', err);
     savedWorkflowsList.value = [];
-  }
-};
-
-const fetchGlobalExecutions = async () => {
-  try {
-    globalExecutionsList.value = await apiGetJson('/api/executions');
-  } catch (err) {
-    console.error('Error fetching global executions:', err);
-    globalExecutionsList.value = [];
-  }
-};
-
-const fetchWorkflowExecutions = async (workflowId: string) => {
-  try {
-    workflowExecutionsList.value = await apiGetJson(`/api/workflows/${workflowId}/executions`);
-  } catch (err) {
-    console.error('Error fetching executions:', err);
-    workflowExecutionsList.value = [];
   }
 };
 

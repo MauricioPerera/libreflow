@@ -224,8 +224,10 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
 - **api.ts** — `apiGetJson` (central GET helper; checks `res.ok`). Shared by App.vue fetchers and
   the composables.
 - **composables/** — extracted stateful logic (the #61 composables pass): `useCredentials`
-  (`{ credentialsList, fetchCredentials }`). App.vue consumes them via destructuring; behavior
-  unchanged. Each has a vitest spec.
+  (`{ credentialsList, fetchCredentials }`), `useExecutions` (`{ globalExecutionsList,
+  workflowExecutionsList, activeExecutionId, fetchGlobalExecutions, fetchWorkflowExecutions }`;
+  `loadPastExecution` stays in App.vue — canvas-coupled). App.vue consumes them via destructuring;
+  behavior unchanged. Each has a vitest spec.
 - **auth.ts** — session: JWT in `localStorage` + `installFetchAuth()` (called in `main.ts`
   before mount) which wraps `window.fetch` to inject `Authorization: Bearer` on `/api` calls and,
   on a `401`, clears the token and fires an `unauthorized` event (App.vue → back to login). This
