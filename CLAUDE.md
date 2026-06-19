@@ -139,8 +139,10 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   persisted to** the `vector_store` SQLite table per collection (`<col>.bin`/`<col>.json` blobs) —
   vectors live in LibreFlow's own DB (single-file backup intact), **owner-scoped** (F2). `embedTexts`
   hits an OpenAI-compatible `POST <endpoint>/embeddings` via `safeFetch` (auth headers resolved by
-  the node). `indexVectors` / `searchVectors` (top-K, metric). Compose `vectorStore(search)→aiAgent`
-  for RAG. db helpers: `getVectorFiles` / `upsertVectorFile` / `deleteVectorCollection` / `listVectorCollections`.
+  the node). `indexVectors` / `searchVectors` (top-K, metric). The `vectorStore` node has ops
+  **index** (items inline), **indexTable** (embeds a text column of a data table → items, owner-checked)
+  and **search**. Compose `vectorStore(search)→aiAgent` for RAG. db helpers: `getVectorFiles` /
+  `upsertVectorFile` / `deleteVectorCollection` / `listVectorCollections`.
 - **fileParse.ts** — pure parse/serialize of file CONTENT. CSV via own parser/serializer
   (`parseCsv`/`toCsv`, no dependency, RFC-4180 quoting); XLSX via **`exceljs`** (maintained —
   replaced SheetJS `xlsx`, which had a high-severity prototype-pollution + ReDoS advisory with

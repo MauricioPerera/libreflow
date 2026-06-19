@@ -515,7 +515,7 @@ const getParamOptions = (param: NodeParameterSchema) => {
   if (props.node?.type === 'mcpToolCall' && param.name === 'toolName') {
     return dynamicOptions.value['toolName'] || [];
   }
-  if ((props.node?.type === 'dataTable' || props.node?.type === 'trigger') && param.name === 'tableId') {
+  if ((props.node?.type === 'dataTable' || props.node?.type === 'trigger' || props.node?.type === 'vectorStore') && param.name === 'tableId') {
     return dynamicOptions.value['tableId'] || [];
   }
   if (props.node?.type === 'aiAgent' && param.name === 'mcpServerId') {
@@ -632,7 +632,7 @@ const fetchMcpServersForDropdown = async () => {
 };
 
 watch(() => props.node?.id, () => {
-  if (props.node?.type === 'dataTable' || props.node?.type === 'trigger') {
+  if (props.node?.type === 'dataTable' || props.node?.type === 'trigger' || props.node?.type === 'vectorStore') {
     fetchDataTablesForDropdown();
   }
   if (props.node?.type === 'aiAgent') {
