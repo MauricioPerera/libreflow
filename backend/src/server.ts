@@ -38,9 +38,15 @@ import {
   getAllWorkflowsWithGraph,
   getUserByEmail,
   assertOwnership,
-  getOwnerOf
+  getOwnerOf,
+  listUsers,
+  createUser,
+  deleteUser,
+  getUserById,
+  updateUserPassword,
+  countAdmins
 } from './db.js';
-import { verifyPassword } from './password.js';
+import { verifyPassword, hashPassword } from './password.js';
 import { signToken } from './jwt.js';
 import { triggerManager } from './triggerManager.js';
 import { NodeRegistry } from './registry.js';
@@ -120,6 +126,93 @@ app.use('/api', requireAuth);
 app.get('/api/auth/me', (req, res) => {
   return res.json({ user: (req as any).user || null });
 });
+
+// El usuario autenticado cambia SU propia contraseña (verifica la actual).
+app.post('/api/auth/password', async (req, res) => {
+  try {
+    const u = (req as any).user;
+    if (!u?.id || u.id === 'dev' || u.id === 'apikey-admin') {
+      return res.status(400).json({ error: 'La sesión actual no es de un usuario gestionable.' });
+    }
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) return res.status(400).json({ error: 'currentPassword y newPassword son obligatorios' });
+    const full = await getUserById(u.id);
+    if (!full || !verifyPassword(String(currentPassword), full.password_hash)) {
+      return res.status(401).json({ error: 'La contraseña actual no es correcta' });
+    }
+    await updateUserPassword(u.id, hashPassword(String(newPassword)));
+    return res.json({ success: true });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+// --- GESTIÓN DE USUARIOS (solo admin) ---
+function requireAdmin(req: express.Request, res: express.Response): boolean {
+  if (!reqIsAdmin(req)) {
+    res.status(403).json({ error: 'Solo un administrador puede gestionar usuarios.' });
+    return false;
+  }
+  return true;
+}
+
+app.get('/api/users', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    return res.json(await listUsers());
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+app.post('/api/users', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const { email, password, role } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: 'email y password son obligatorios' });
+    const r = role === 'admin' ? 'admin' : 'user';
+    const user = await createUser(String(email), hashPassword(String(password)), r);
+    return res.json({ id: user.id, email: user.email, role: user.role });
+  } catch (err: any) {
+    // createUser lanza un mensaje claro en email duplicado.
+    if (/Ya existe un usuario/.test(err?.message || '')) return res.status(409).json({ error: err.message });
+    return serverError(res, err);
+  }
+});
+
+// Reset de contraseña de cualquier usuario por un admin.
+app.post('/api/users/:id/password', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const { newPassword } = req.body || {};
+    if (!newPassword) return res.status(400).json({ error: 'newPassword es obligatorio' });
+    const target = await getUserById(req.params.id);
+    if (!target) return res.status(404).json({ error: 'Usuario no encontrado' });
+    await updateUserPassword(target.id, hashPassword(String(newPassword)));
+    return res.json({ success: true });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+app.delete('/api/users/:id', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  try {
+    const target = await getUserById(req.params.id);
+    if (!target) return res.status(404).json({ error: 'Usuario no encontrado' });
+    // No puedes borrarte a ti mismo ni dejar el sistema sin ningún admin.
+    if (target.id === (req as any).user?.id) return res.status(400).json({ error: 'No puedes borrar tu propia cuenta.' });
+    if (target.role === 'admin' && (await countAdmins()) <= 1) {
+      return res.status(400).json({ error: 'No puedes borrar el último administrador.' });
+    }
+    await deleteUser(target.id);
+    // Nota: los recursos de un usuario borrado quedan con owner_id huérfano → solo accesibles por admin.
+    return res.json({ success: true });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
 app.use('/api/mcp', mcpRouter);
 
 // Named MCP servers are reachable at their own public URL (/mcp/:id/...), outside

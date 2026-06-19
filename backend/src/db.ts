@@ -258,6 +258,21 @@ export async function countUsers(): Promise<number> {
   return r?.c ?? 0;
 }
 
+/** Nº de usuarios con rol admin (para no quedarnos sin ningún admin al borrar/degradar). */
+export async function countAdmins(): Promise<number> {
+  const r = await db.get("SELECT COUNT(*) as c FROM users WHERE role = 'admin'");
+  return r?.c ?? 0;
+}
+
+export async function deleteUser(id: string): Promise<void> {
+  await db.run('DELETE FROM users WHERE id = ?', [id]);
+}
+
+/** Cambia la contraseña (hash ya derivado por el llamante). */
+export async function updateUserPassword(id: string, passwordHash: string): Promise<void> {
+  await db.run('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [passwordHash, id]);
+}
+
 // --- OWNERSHIP (auth multi-usuario, enforcement F2) ---
 
 /**

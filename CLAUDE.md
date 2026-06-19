@@ -152,7 +152,7 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   and attaches `req.user` (`{id,email,role}`); webhook HMAC; `constantTimeEqual` (per-MCP-server
   token); SSRF guard (`assertSafeUrl` + `safeFetch`, which re-validates every redirect hop),
   `isUnsafeKey`, `rateLimit`, `cronTooFrequent`. httpRequest/oauth2 use `safeFetch`; httpRequest
-  reads the body capped (`readResponseCapped`, `binary.ts`). **Multi-user auth (in progress):**
+  reads the body capped (`readResponseCapped`, `binary.ts`). **Multi-user auth:**
   `password.ts` (scrypt) + `users` table + `owner_id`; `POST /api/auth/login` issues the JWT,
   `GET /api/auth/me` returns the current user. Ownership: `assertOwnership(resOwner,reqUser,isAdmin)`
   + `owner_id` set on create (F2a). **Execution isolation (F2b):** the executor threads the run's
@@ -164,7 +164,10 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   all). **Global MCP (F2-MCP):** `POST /api/mcp` scopes active workflows + data-table/workflow
   resources to `req.user` (named servers unchanged). Cross-user isolation is covered by an HTTP
   anti-leak suite (`auth-f2d-isolation.test.ts`, supertest). Single-tenant (no `owner_id`) and admin
-  are unaffected.
+  are unaffected. **User management (F4):** admin-only `/api/users` (list/create/delete; guards:
+  no self-delete, no deleting the last admin) + `/api/users/:id/password` (admin reset) +
+  `/api/auth/password` (self-change, verifies current). `requireAdmin` gates them; `users-admin.test.ts`.
+  For supertest, `server.ts` exports `app` and skips `app.listen` under `VITEST`.
 - **mcp.ts** — MCP server **and** client, via the official SDK (`@modelcontextprotocol/sdk`).
   `dispatchMcpRpc(body, scope)` is the single JSON-RPC source of truth (scope = which
   workflows + whether the `libreflow_*` system tools are exposed). Transports: **Streamable
@@ -191,7 +194,11 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   `NodeConfigPanel`, and workflow **export/import** (download blob / file-picker → POST).
 - **components/** — extracted, presentational (props in / emits out) unless noted:
   - Dashboard subviews: `FlowsView`, `CredentialsView`, `ExecutionsView`, `DataTablesList`,
-    `DataTableDetail` (controlled inline-edit: state stays in App.vue), `McpServersView`.
+    `DataTableDetail` (controlled inline-edit: state stays in App.vue), `McpServersView`,
+    `UsersAdminView` (admin-only; self-contained: fetches/creates/deletes via `/api/users`).
+  - Auth: `LoginView` (email/password → `POST /api/auth/login` → emits `logged-in`). App.vue
+    gates the whole UI on `currentUser` (no session → only the login shows); the **Usuarios**
+    sidebar entry + logout appear when authenticated (admin sees the users view).
   - Modals: `SaveWorkflowModal`, `AddRowModal`, `DataTableModal`, `McpServerModal`,
     `BatchValidateModal`, `AiContextModal`, and `CredentialModal` (self-contained: owns the
     whole form + the OAuth connect flow — popup, `e.origin`-checked `postMessage`, listener
@@ -201,6 +208,10 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
 - **utils.ts** — pure helpers (no reactive state): `statusLabel`, `formatFullDate`,
   `credentialTypeLabel`, `mcpServerUrl`, `setNestedValue` (prototype-pollution-guarded),
   `parseJsonColumns`, `coerceRowByColumns`. Unit-tested.
+- **auth.ts** — session: JWT in `localStorage` + `installFetchAuth()` (called in `main.ts`
+  before mount) which wraps `window.fetch` to inject `Authorization: Bearer` on `/api` calls and,
+  on a `401`, clears the token and fires an `unauthorized` event (App.vue → back to login). This
+  is why the scattered raw `fetch('/api/...')` calls need no per-site change.
 - **focusTrap.ts** — global `v-focus-trap` directive for modals (Esc + click-outside + ARIA
   are also wired). Mount tests stub it via `global.directives`.
 - **Frontend tests** — `vitest` + `@vue/test-utils` + jsdom (`frontend/vitest.config.ts`): a

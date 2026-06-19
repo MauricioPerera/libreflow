@@ -1,6 +1,9 @@
 <template>
+  <!-- LOGIN (sin sesión no se ve nada del dashboard ni el editor) -->
+  <LoginView v-if="!currentUser" @logged-in="onLogin" />
+
   <!-- DASHBOARD VIEW -->
-  <div v-if="currentView === 'dashboard'" class="dashboard-layout">
+  <div v-if="currentUser && currentView === 'dashboard'" class="dashboard-layout">
     <!-- Left Navigation Sidebar -->
     <aside class="dashboard-sidebar">
       <div class="sidebar-brand">
@@ -37,7 +40,20 @@
         >
           🔌 Servidores MCP
         </button>
+        <button
+          v-if="isAdmin"
+          @click="activeSubView = 'users'"
+          :class="['menu-btn', { active: activeSubView === 'users' }]"
+        >
+          👤 Usuarios
+        </button>
       </nav>
+
+      <!-- Sesión: usuario actual + cerrar sesión -->
+      <div class="sidebar-session">
+        <span class="session-email" :title="currentUser?.email || ''">{{ currentUser?.email || currentUser?.id }}</span>
+        <button class="logout-btn" @click="logout">Cerrar sesión</button>
+      </div>
     </aside>
 
     <!-- Main Content Panel -->
@@ -113,11 +129,17 @@
         @delete="deleteMcpServerFromDb"
         @copy="copyMcpText"
       />
+
+      <!-- USERS SUBVIEW (solo admin) -->
+      <UsersAdminView
+        v-if="activeSubView === 'users' && isAdmin"
+        :current-user-id="currentUser?.id || null"
+      />
     </main>
   </div>
 
   <!-- EDITOR VIEW -->
-  <div v-else-if="currentView === 'editor'" class="libreflow-layout">
+  <div v-else-if="currentUser && currentView === 'editor'" class="libreflow-layout">
     <!-- Editor Header -->
     <header class="libreflow-header">
       <div class="brand-section">
@@ -545,11 +567,18 @@ import BatchValidateModal from './components/BatchValidateModal.vue';
 import AiContextModal from './components/AiContextModal.vue';
 import CredentialModal from './components/CredentialModal.vue';
 import McpServersView from './components/McpServersView.vue';
+import LoginView from './components/LoginView.vue';
+import UsersAdminView from './components/UsersAdminView.vue';
+import { getToken, setToken, clearToken, authEvents } from './auth';
 import { statusLabel, formatFullDate, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
+
+// Sesión (multi-usuario). null = no autenticado → se muestra el login.
+const currentUser = ref<{ id: string; email?: string; role: string } | null>(null);
+const isAdmin = computed(() => currentUser.value?.role === 'admin');
 
 // Screen Routing states
 const currentView = ref<'dashboard' | 'editor'>('dashboard');
-const activeSubView = ref<'workflows' | 'executions' | 'credentials' | 'datatables' | 'mcpservers'>('workflows');
+const activeSubView = ref<'workflows' | 'executions' | 'credentials' | 'datatables' | 'mcpservers' | 'users'>('workflows');
 
 // MCP servers state
 const mcpServersList = ref<any[]>([]);
@@ -1635,7 +1664,8 @@ const deleteRowFromTable = async (rowId: string) => {
 };
 
 // Initial load
-onMounted(async () => {
+// Carga los datos del dashboard (tras autenticar).
+const loadDashboard = async () => {
   await fetchNodeTypes();
   await fetchSavedWorkflows();
   await fetchGlobalExecutions();
@@ -1643,6 +1673,40 @@ onMounted(async () => {
   await fetchDataTables();
   await fetchMcpServers();
   dashboardLoaded.value = true;
+};
+
+// Tras un login correcto: persiste el token, fija el usuario y carga el dashboard.
+const onLogin = async (payload: { token: string; user: any }) => {
+  setToken(payload.token);
+  currentUser.value = payload.user;
+  await loadDashboard();
+};
+
+// Cierra sesión: descarta el token y vuelve al login.
+const logout = () => {
+  clearToken();
+  currentUser.value = null;
+  currentView.value = 'dashboard';
+  activeSubView.value = 'workflows';
+};
+
+onMounted(async () => {
+  // Resuelve la sesión: si hay token, valida con /api/auth/me; si no, se muestra el login.
+  if (getToken()) {
+    try {
+      const res = await fetch('/api/auth/me');
+      if (res.ok) {
+        const data = await res.json();
+        currentUser.value = data.user || null;
+      } else {
+        clearToken();
+      }
+    } catch { clearToken(); }
+  }
+  if (currentUser.value) await loadDashboard();
+
+  // Un 401 en cualquier llamada (sesión caducada) devuelve al login.
+  authEvents.addEventListener('unauthorized', () => { currentUser.value = null; });
 
   // Warn before leaving/reloading the tab with unsaved canvas changes.
   window.addEventListener('beforeunload', (e: BeforeUnloadEvent) => {
