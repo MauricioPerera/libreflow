@@ -8,6 +8,7 @@ import ivm from 'isolated-vm';
 import { executeMcpToolCall } from './mcp.js';
 import { assertSafeUrl, safeFetch, isUnsafeKey } from './security.js';
 import { getOAuth2AccessToken } from './oauth2.js';
+import { indexVectors, searchVectors } from './vectorStore.js';
 
 /**
  * Loads a stored credential and returns the auth to apply: headers to merge and query
@@ -1991,6 +1992,71 @@ const waitNode: LibreFlowNodeDefinition = {
   execute: async () => { throw new WorkflowSuspendError(); }
 };
 
+// Vector store (RAG): indexa textos como embeddings y busca por similitud. Los vectores viven
+// dentro de LibreFlow (SQLite) vía js-vector-store; los embeddings los genera un endpoint
+// OpenAI-compatible (LM Studio/Ollama/OpenAI). Componer con aiAgent para RAG: search -> contexto.
+const vectorStoreNode: LibreFlowNodeDefinition = {
+  type: 'vectorStore',
+  displayName: 'Vector Store (RAG)',
+  category: 'AI',
+  icon: '🧠',
+  description: 'Indexa textos como embeddings y busca por similitud semántica. Base de conocimiento para RAG, dentro de LibreFlow.',
+  ui: {
+    subtitle: 'Embeddings / búsqueda',
+    inputs: [{ id: 'main' }],
+    outputs: [{ id: 'main' }],
+    gradient: 'linear-gradient(135deg, hsl(265, 80%, 58%), hsl(200, 80%, 52%))'
+  },
+  parameters: [
+    { name: 'operation', label: 'Operación', type: 'options', default: 'search', options: [
+      { label: 'Indexar (embeber y guardar)', value: 'index' },
+      { label: 'Buscar (similitud)', value: 'search' },
+    ] },
+    { name: 'collection', label: 'Colección', type: 'string', default: 'docs', placeholder: 'nombre de la base de conocimiento' },
+    { name: 'endpoint', label: 'Endpoint de embeddings (OpenAI-compatible)', type: 'string', default: 'http://localhost:1234/v1', placeholder: 'http://localhost:1234/v1' },
+    { name: 'model', label: 'Modelo de embeddings', type: 'string', default: '', placeholder: 'ej. text-embedding-3-small / nomic-embed-text' },
+    { name: 'authentication', label: 'Autenticación', type: 'options', default: 'none', options: [
+      { label: 'Ninguna', value: 'none' },
+      { label: 'Credencial Genérica', value: 'genericCredential' },
+    ] },
+    { name: 'credentialId', label: 'Credencial', type: 'options', default: '' },
+    { name: 'items', label: 'Items a indexar (JSON: [{text, id?, metadata?}])', type: 'json', default: '[]',
+      placeholder: '{{ $node.X.output }} o [{"text":"..."}]' },
+    { name: 'query', label: 'Consulta (buscar)', type: 'string', default: '', placeholder: '{{ $node.X.output.pregunta }}' },
+    { name: 'topK', label: 'Top-K (buscar)', type: 'string', default: '5' },
+    { name: 'metric', label: 'Métrica', type: 'options', default: 'cosine', options: [
+      { label: 'Coseno', value: 'cosine' },
+      { label: 'Euclídea', value: 'euclidean' },
+      { label: 'Producto punto', value: 'dotProduct' },
+      { label: 'Manhattan', value: 'manhattan' },
+    ] },
+  ],
+  execute: async (params, _context, _inputs, execMeta) => {
+    const { operation = 'search', collection, endpoint, model, authentication = 'none', credentialId } = params;
+    if (!collection) throw new Error('Vector Store: falta la colección.');
+    // Auth de embeddings desde el vault (solo headers; sin manejar secreto en claro).
+    const auth = (authentication === 'genericCredential' && credentialId)
+      ? await resolveCredentialAuth(credentialId, execMeta?.ownerId, execMeta?.isAdmin)
+      : { headers: {}, query: {} };
+    const cfg = { endpoint, model, headers: auth.headers };
+    const ownerId = execMeta?.ownerId ?? null;
+
+    if (operation === 'index') {
+      let items: any = params.items;
+      if (typeof items === 'string') {
+        try { items = JSON.parse(items || '[]'); } catch { throw new Error('Vector Store: "items" debe ser JSON válido.'); }
+      }
+      if (!Array.isArray(items)) throw new Error('Vector Store: "items" debe ser un array.');
+      return await indexVectors(ownerId, String(collection), items, cfg);
+    }
+    if (operation === 'search') {
+      const matches = await searchVectors(ownerId, String(collection), String(params.query || ''), Number(params.topK) || 5, cfg, params.metric || 'cosine');
+      return { matches, count: matches.length };
+    }
+    throw new Error(`Vector Store: operación no soportada "${operation}".`);
+  }
+};
+
 class NodeRegistryClass {
   private registry = new Map<string, LibreFlowNodeDefinition>();
 
@@ -2014,6 +2080,7 @@ class NodeRegistryClass {
     this.register(aiAgentNode);
     this.register(respondNode);
     this.register(waitNode);
+    this.register(vectorStoreNode);
   }
 
   register(node: LibreFlowNodeDefinition) {
