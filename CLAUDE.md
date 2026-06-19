@@ -211,10 +211,12 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
     `BatchValidateModal`, `AiContextModal`, and `CredentialModal` (self-contained: owns the
     whole form + the OAuth connect flow — popup, `e.origin`-checked `postMessage`, listener
     cleaned on unmount).
-  - Editor: `CustomNode` (pin badge), `NodeConfigPanel` (param form, inline JSON/cron
-    validation, pin/re-run controls), `NodePalette` (left node-add panel + collapse toggle;
-    `v-model:collapsed`, `@add`), `EditorHeader` (toolbar: back/name/active-toggle/save/run +
-    version-preview banner; `v-model:workflow-name`/`v-model:active`), `ExpressionEditor`,
+  - Editor: `CustomNode` (pin badge), `EditorSidebar` (right panel: tabs Parámetros/Historial/
+    Versiones — wraps `NodeConfigPanel` + flow-settings/history/versions lists; `v-model:collapsed`/
+    `v-model:on-error-workflow-id`, `@change-tab` → App fetches), `NodeConfigPanel` (param form,
+    inline JSON/cron validation, pin/re-run controls), `NodePalette` (left node-add panel +
+    collapse toggle; `v-model:collapsed`, `@add`), `EditorHeader` (toolbar: back/name/active-toggle/
+    save/run + version-preview banner; `v-model:workflow-name`/`v-model:active`), `ExpressionEditor`,
     `JsonTreeItem` (binary refs → download).
 - **utils.ts** — pure helpers (no reactive state): `statusLabel`, `formatFullDate`,
   `credentialTypeLabel`, `mcpServerUrl`, `setNestedValue` (prototype-pollution-guarded),
