@@ -2,6 +2,10 @@ import { createApp } from 'vue';
 import App from './App.vue';
 import './index.css';
 import { focusTrap } from './focusTrap';
+import { installFetchAuth } from './auth';
+
+// Inyecta el Bearer en las llamadas a la API y gestiona los 401 (debe ir ANTES de montar).
+installFetchAuth();
 
 // Core styles are required for Vue Flow
 import '@vue-flow/core/dist/style.css';
