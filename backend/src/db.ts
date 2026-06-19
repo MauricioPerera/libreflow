@@ -258,6 +258,25 @@ export async function countUsers(): Promise<number> {
   return r?.c ?? 0;
 }
 
+// --- OWNERSHIP (auth multi-usuario, enforcement F2) ---
+
+/**
+ * Decide si un solicitante puede acceder a un recurso según su dueño o su rol admin.
+ * Función pura (contrato `assert-ownership`): admin siempre; mismo dueño sí; dueño distinto
+ * o recurso huérfano para no-admin, no. La capa de ruta traduce `false` a 404 (no 403).
+ */
+export function assertOwnership(resourceOwnerId: string | null | undefined, requesterId: string | null | undefined, requesterIsAdmin: boolean): boolean {
+  if (requesterIsAdmin) return true;
+  if (!resourceOwnerId) return false;
+  return resourceOwnerId === requesterId;
+}
+
+/** Devuelve el `owner_id` de un recurso (o null si no existe / sin dueño). Tabla en allowlist. */
+export async function getOwnerOf(table: 'workflows' | 'credentials' | 'data_tables' | 'mcp_servers', id: string): Promise<string | null> {
+  const row = await db.get(`SELECT owner_id FROM ${table} WHERE id = ?`, [id]);
+  return row ? (row.owner_id ?? null) : null;
+}
+
 /**
  * Adds a column only if it does not already exist, distinguishing the benign
  * "duplicate column" case from real migration failures (which are rethrown).
@@ -324,7 +343,7 @@ export async function getWorkflowsByIds(ids: string[]) {
   return ids.map(id => byId[id]).filter(Boolean);
 }
 
-export async function saveWorkflow(id: string, name: string, nodes: any, connections: any, onErrorWorkflowId?: string, description?: string | null) {
+export async function saveWorkflow(id: string, name: string, nodes: any, connections: any, onErrorWorkflowId?: string, description?: string | null, ownerId?: string | null) {
   const nodesStr = JSON.stringify(nodes);
   const connectionsStr = JSON.stringify(connections);
   // undefined => keep the existing description (COALESCE); null/'' => clear it.
@@ -335,14 +354,15 @@ export async function saveWorkflow(id: string, name: string, nodes: any, connect
   try {
     const existing = await db.get('SELECT id FROM workflows WHERE id = ?', [id]);
     if (existing) {
+      // UPDATE no toca owner_id: el dueño se fija en la creación y no cambia al editar.
       await db.run(
         'UPDATE workflows SET name = ?, nodes = ?, connections = ?, onErrorWorkflowId = ?, description = COALESCE(?, description), updated_at = CURRENT_TIMESTAMP WHERE id = ?',
         [name, nodesStr, connectionsStr, onErrorWorkflowId || null, desc, id]
       );
     } else {
       await db.run(
-        'INSERT INTO workflows (id, name, nodes, connections, onErrorWorkflowId, description, active) VALUES (?, ?, ?, ?, ?, ?, 0)',
-        [id, name, nodesStr, connectionsStr, onErrorWorkflowId || null, desc]
+        'INSERT INTO workflows (id, name, nodes, connections, onErrorWorkflowId, description, active, owner_id) VALUES (?, ?, ?, ?, ?, ?, 0, ?)',
+        [id, name, nodesStr, connectionsStr, onErrorWorkflowId || null, desc, ownerId || null]
       );
     }
 
@@ -451,7 +471,7 @@ export async function getCredentialById(id: string) {
   return credential;
 }
 
-export async function saveCredential(id: string, name: string, type: string, rawData: any) {
+export async function saveCredential(id: string, name: string, type: string, rawData: any, ownerId?: string | null) {
   const dataStr = JSON.stringify(rawData);
   const encryptedData = encrypt(dataStr);
 
@@ -463,8 +483,8 @@ export async function saveCredential(id: string, name: string, type: string, raw
     );
   } else {
     await db.run(
-      'INSERT INTO credentials (id, name, type, data) VALUES (?, ?, ?, ?)',
-      [id, name, type, encryptedData]
+      'INSERT INTO credentials (id, name, type, data, owner_id) VALUES (?, ?, ?, ?, ?)',
+      [id, name, type, encryptedData, ownerId || null]
     );
   }
 }
@@ -567,7 +587,7 @@ export async function getDataTableByName(name: string) {
   return table;
 }
 
-export async function saveDataTable(id: string, name: string, columns: any[], keyColumn?: string | null) {
+export async function saveDataTable(id: string, name: string, columns: any[], keyColumn?: string | null, ownerId?: string | null) {
   const colsStr = JSON.stringify(columns);
   const key = keyColumn || null;
   const existing = await db.get('SELECT id FROM data_tables WHERE id = ?', [id]);
@@ -578,8 +598,8 @@ export async function saveDataTable(id: string, name: string, columns: any[], ke
     );
   } else {
     await db.run(
-      'INSERT INTO data_tables (id, name, columns, key_column) VALUES (?, ?, ?, ?)',
-      [id, name, colsStr, key]
+      'INSERT INTO data_tables (id, name, columns, key_column, owner_id) VALUES (?, ?, ?, ?, ?)',
+      [id, name, colsStr, key, ownerId || null]
     );
   }
 }
@@ -991,7 +1011,8 @@ export async function saveMcpServer(
   workflowIds: string[],
   token: string | null,
   requireAuth: boolean,
-  exposeSystemTools: boolean
+  exposeSystemTools: boolean,
+  ownerId?: string | null
 ) {
   const idsStr = JSON.stringify(Array.isArray(workflowIds) ? workflowIds : []);
   const ra = requireAuth ? 1 : 0;
@@ -1004,8 +1025,8 @@ export async function saveMcpServer(
     );
   } else {
     await db.run(
-      'INSERT INTO mcp_servers (id, name, workflow_ids, token, require_auth, expose_system_tools) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, name, idsStr, token, ra, est]
+      'INSERT INTO mcp_servers (id, name, workflow_ids, token, require_auth, expose_system_tools, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, name, idsStr, token, ra, est, ownerId || null]
     );
   }
 }
