@@ -4,57 +4,15 @@
 
   <!-- DASHBOARD VIEW -->
   <div v-if="currentUser && currentView === 'dashboard'" class="dashboard-layout">
-    <!-- Left Navigation Sidebar -->
-    <aside class="dashboard-sidebar">
-      <div class="sidebar-brand">
-        <span class="brand-logo">⚡ LibreFlow</span>
-      </div>
-      <nav class="sidebar-menu">
-        <button 
-          @click="activeSubView = 'workflows'" 
-          :class="['menu-btn', { active: activeSubView === 'workflows' }]"
-        >
-          📂 Flujos de Trabajo
-        </button>
-        <button 
-          @click="activeSubView = 'executions'; fetchGlobalExecutions()" 
-          :class="['menu-btn', { active: activeSubView === 'executions' }]"
-        >
-          ⏳ Ejecuciones
-        </button>
-        <button 
-          @click="activeSubView = 'credentials'; fetchCredentials()" 
-          :class="['menu-btn', { active: activeSubView === 'credentials' }]"
-        >
-          🔑 Credenciales
-        </button>
-        <button
-          @click="activeSubView = 'datatables'; fetchDataTables()"
-          :class="['menu-btn', { active: activeSubView === 'datatables' }]"
-        >
-          📊 Tablas de Datos
-        </button>
-        <button
-          @click="activeSubView = 'mcpservers'; fetchMcpServers(); fetchSavedWorkflows()"
-          :class="['menu-btn', { active: activeSubView === 'mcpservers' }]"
-        >
-          🔌 Servidores MCP
-        </button>
-        <button
-          v-if="isAdmin"
-          @click="activeSubView = 'users'"
-          :class="['menu-btn', { active: activeSubView === 'users' }]"
-        >
-          👤 Usuarios
-        </button>
-      </nav>
-
-      <!-- Sesión: usuario actual + cerrar sesión -->
-      <div class="sidebar-session">
-        <span class="session-email" :title="currentUser?.email || ''">{{ currentUser?.email || currentUser?.id }}</span>
-        <button class="logout-btn" @click="logout">Cerrar sesión</button>
-      </div>
-    </aside>
+    <!-- Sidebar de navegación del dashboard -->
+    <DashboardSidebar
+      :active-sub-view="activeSubView"
+      :is-admin="isAdmin"
+      :user-label="currentUser?.email || currentUser?.id || ''"
+      :user-email="currentUser?.email || ''"
+      @select="onSelectSubView"
+      @logout="logout"
+    />
 
     <!-- Main Content Panel -->
     <main class="dashboard-content">
@@ -503,6 +461,7 @@ import CredentialModal from './components/CredentialModal.vue';
 import McpServersView from './components/McpServersView.vue';
 import NodePalette from './components/NodePalette.vue';
 import EditorHeader from './components/EditorHeader.vue';
+import DashboardSidebar from './components/DashboardSidebar.vue';
 import LoginView from './components/LoginView.vue';
 import UsersAdminView from './components/UsersAdminView.vue';
 import { getToken, setToken, clearToken, authEvents } from './auth';
@@ -1624,6 +1583,16 @@ const logout = () => {
   currentUser.value = null;
   currentView.value = 'dashboard';
   activeSubView.value = 'workflows';
+};
+
+// Cambia de subvista del dashboard y dispara el fetch correspondiente (lo que antes hacía
+// cada botón del sidebar inline).
+const onSelectSubView = (view: string) => {
+  activeSubView.value = view as typeof activeSubView.value;
+  if (view === 'executions') fetchGlobalExecutions();
+  else if (view === 'credentials') fetchCredentials();
+  else if (view === 'datatables') fetchDataTables();
+  else if (view === 'mcpservers') { fetchMcpServers(); fetchSavedWorkflows(); }
 };
 
 onMounted(async () => {

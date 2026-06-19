@@ -199,6 +199,8 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   `focusIssueNode`). Wires the **pin** (`set-pin`) and **re-run** (`rerun`) actions from
   `NodeConfigPanel`, and workflow **export/import** (download blob / file-picker → POST).
 - **components/** — extracted, presentational (props in / emits out) unless noted:
+  - Dashboard shell: `DashboardSidebar` (nav + session block; `@select(view)` → App.vue switches
+    subview and fires the fetch, `@logout`).
   - Dashboard subviews: `FlowsView`, `CredentialsView`, `ExecutionsView`, `DataTablesList`,
     `DataTableDetail` (controlled inline-edit: state stays in App.vue), `McpServersView`,
     `UsersAdminView` (admin-only; self-contained: fetches/creates/deletes via `/api/users`).
