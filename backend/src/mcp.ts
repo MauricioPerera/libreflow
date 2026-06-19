@@ -500,424 +500,375 @@ function assignUniqueToolNames(workflows: any[]): Map<string, string> {
 
 type RpcResult = { status: number; payload: any };
 
+// --- Helpers de respuesta JSON-RPC (forma única; el status varía por caso) ---
+function rpcText(id: any, text: string): RpcResult {
+  return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }] } } };
+}
+function rpcErr(id: any, code: number, message: string, status = 200): RpcResult {
+  return { status, payload: { jsonrpc: '2.0', id, error: { code, message } } };
+}
+function rpcOk(id: any, result: any): RpcResult {
+  return { status: 200, payload: { jsonrpc: '2.0', id, result } };
+}
+function missingParam(id: any, message: string): RpcResult {
+  return rpcErr(id, -32602, message, 400);
+}
+
+function handleInitialize(id: any, scope: McpScope): RpcResult {
+  const capabilities: any = { tools: {} };
+  if (scope.exposeResources) capabilities.resources = {};
+  return rpcOk(id, {
+    protocolVersion: '2024-11-05',
+    capabilities,
+    serverInfo: { name: 'LibreFlow MCP Server', version: '1.0.0' },
+  });
+}
+
+// RESOURCES (solo lectura): data-tables y definiciones de flujo como contexto adjuntable por el
+// host MCP. Distinto de las tools (acción). Solo si el scope lo permite, y acotado por dueño.
+async function handleResourcesList(id: any, scope: McpScope): Promise<RpcResult> {
+  if (!scope.exposeResources) return rpcOk(id, { resources: [] });
+  const allTables = await getDataTables();
+  const tables = scope.ownerId === undefined
+    ? allTables
+    : (allTables || []).filter((t: any) => assertOwnership(t.owner_id ?? null, scope.ownerId ?? null, scope.isAdmin ?? false));
+  const tableResources = (tables || []).map((t: any) => ({
+    uri: `libreflow://datatable/${t.id}`,
+    name: t.name,
+    description: t.description || `Filas de la tabla de datos "${t.name}"`,
+    mimeType: 'application/json',
+  }));
+  const workflows = await resolveScopedWorkflows(scope);
+  const workflowResources = (workflows || []).map((w: any) => ({
+    uri: `libreflow://workflow/${w.id}`,
+    name: `Flujo: ${w.name}`,
+    description: w.description || `Definición del flujo "${w.name}" (nodos y conexiones)`,
+    mimeType: 'application/json',
+  }));
+  return rpcOk(id, { resources: [...tableResources, ...workflowResources] });
+}
+
+async function readDataTableResource(id: any, uri: string, tableId: string, scope: McpScope): Promise<RpcResult> {
+  if (scope.ownerId !== undefined) {
+    const t = await getDataTableById(tableId);
+    if (!t || !assertOwnership((t as any).owner_id ?? null, scope.ownerId ?? null, scope.isAdmin ?? false)) {
+      return rpcErr(id, -32602, `Unknown resource uri: ${uri}`);
+    }
+  }
+  const rows = await queryDataTableRows(tableId, [], { limit: AGENT_ROW_LIMIT });
+  const out = {
+    table: tableId,
+    returned: rows.length,
+    limit: AGENT_ROW_LIMIT,
+    truncated: rows.length >= AGENT_ROW_LIMIT,
+    rows: rows.map(slimRow),
+  };
+  return rpcOk(id, { contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(out) }] });
+}
+
+async function readWorkflowResource(id: any, uri: string, workflowId: string, scope: McpScope): Promise<RpcResult> {
+  const workflow = await getWorkflowById(workflowId);
+  if (!workflow || (scope.ownerId !== undefined && !assertOwnership((workflow as any).owner_id ?? null, scope.ownerId ?? null, scope.isAdmin ?? false))) {
+    return rpcErr(id, -32602, `Unknown resource uri: ${uri}`);
+  }
+  const def = {
+    id: workflow.id,
+    name: workflow.name,
+    description: workflow.description ?? null,
+    active: workflow.active ?? false,
+    nodes: workflow.nodes,
+    connections: workflow.connections,
+  };
+  return rpcOk(id, { contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(def) }] });
+}
+
+async function handleResourcesRead(id: any, params: any, scope: McpScope): Promise<RpcResult> {
+  if (!scope.exposeResources) {
+    return rpcErr(id, -32601, 'Resources not enabled on this server', 404);
+  }
+  const uri = String(params?.uri || '');
+  const tableMatch = uri.match(/^libreflow:\/\/datatable\/(.+)$/);
+  if (tableMatch) return readDataTableResource(id, uri, tableMatch[1], scope);
+  const workflowMatch = uri.match(/^libreflow:\/\/workflow\/(.+)$/);
+  if (workflowMatch) return readWorkflowResource(id, uri, workflowMatch[1], scope);
+  return rpcErr(id, -32602, `Unknown resource uri: ${uri}`);
+}
+
+/** inputSchema declarado por el trigger del flujo (JSON o ya objeto); default vacío. */
+function workflowInputSchema(workflow: any): any {
+  const triggerNode = (workflow.nodes || []).find((n: any) => n.type === 'trigger');
+  const raw = triggerNode?.parameters?.inputSchema;
+  if (!raw) return { type: 'object', properties: {} };
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch {
+    // schema inválido → default vacío
+  }
+  return { type: 'object', properties: {} };
+}
+
+async function handleToolsList(id: any, scope: McpScope): Promise<RpcResult> {
+  const workflows = await resolveScopedWorkflows(scope);
+  const nameMap = assignUniqueToolNames(workflows);
+  const workflowTools = workflows.map(workflow => ({
+    name: nameMap.get(workflow.id),
+    description: workflow.description || `Ejecuta el flujo LibreFlow: ${workflow.name}`,
+    inputSchema: workflowInputSchema(workflow),
+  }));
+  const systemTools = SYSTEM_TOOLS.map(t =>
+    TOOL_ANNOTATIONS[t.name] ? { ...t, annotations: TOOL_ANNOTATIONS[t.name] } : t
+  );
+  const tools = scope.exposeSystemTools ? [...systemTools, ...workflowTools] : workflowTools;
+  return rpcOk(id, { tools });
+}
+
+/** Reporte conciso de una ejecución para los agentes: solo salidas de nodos exitosos (+ error). */
+function conciseRunReport(report: any): any {
+  const outputs: Record<string, any> = {};
+  for (const r of Object.values(report.nodeResults) as any[]) {
+    if (r.status === 'success') outputs[r.nodeName] = r.output;
+  }
+  const concise: any = { success: report.success, durationMs: report.durationMs, outputs };
+  if (!report.success) {
+    const failed = (Object.values(report.nodeResults) as any[]).find(r => r.status === 'failed');
+    concise.error = failed ? { node: failed.nodeName, message: failed.error } : 'unknown error';
+  }
+  return concise;
+}
+
+// --- Dispatch table de las system tools (libreflow_*). Cada handler es pequeño y puro de control. ---
+type ToolHandler = (id: any, args: any) => Promise<RpcResult> | RpcResult;
+
+const SYSTEM_TOOL_HANDLERS: Record<string, ToolHandler> = {
+  libreflow_list_node_types: (id) => {
+    const list = NodeRegistry.getAllNodeTypes().map(nodeDef => {
+      const { execute, ...meta } = nodeDef;
+      return meta;
+    });
+    return dataResult(id, list);
+  },
+
+  libreflow_list_workflows: async (id) => {
+    const list = await getWorkflows();
+    return dataResult(id, list.map(w => ({ id: w.id, name: w.name, active: w.active })));
+  },
+
+  libreflow_get_workflow: async (id, args) => {
+    if (!args.id) return missingParam(id, 'Missing id parameter');
+    const workflow = await getWorkflowById(args.id);
+    if (!workflow) return rpcText(id, `Workflow not found with ID: ${args.id}`);
+    return dataResult(id, workflow);
+  },
+
+  libreflow_save_workflow: async (id, args) => {
+    const { id: wId, name: wName, nodes = [], connections = [], onErrorWorkflowId, description: wDesc } = args;
+    if (!wId || !wName) return missingParam(id, 'Missing id or name parameter');
+    await saveWorkflow(wId, wName, nodes, connections, onErrorWorkflowId, wDesc);
+    return rpcText(id, `Workflow '${wName}' saved successfully.`);
+  },
+
+  libreflow_run_workflow: async (id, args) => {
+    const wId = args.workflowId;
+    if (!wId) return missingParam(id, 'Missing workflowId parameter');
+    const workflow = await getWorkflowById(wId);
+    if (!workflow) return rpcText(id, `Workflow not found with ID: ${wId}`);
+    const { executeWorkflowAndRecord } = await import('./executor.js');
+    const report = await executeWorkflowAndRecord(workflow, args.payload || {});
+    // Conciso por defecto; el reporte nodo-a-nodo completo con concise:false o get_execution.
+    return dataResult(id, args.concise === false ? report : conciseRunReport(report));
+  },
+
+  libreflow_list_executions: async (id) => {
+    const list = await getAllExecutions();
+    return dataResult(id, { returned: list.length, truncated: list.length >= 100, executions: list });
+  },
+
+  libreflow_get_execution: async (id, args) => {
+    if (!args.id) return missingParam(id, 'Missing id parameter');
+    const execution = await getExecutionById(args.id);
+    if (!execution) return rpcText(id, `Execution not found with ID: ${args.id}`);
+    return dataResult(id, execution);
+  },
+
+  libreflow_validate_workflow: (id, args) => {
+    const { nodes = [], connections = [] } = args;
+    return dataResult(id, validateWorkflow(nodes, connections));
+  },
+
+  libreflow_list_data_tables: async (id) => {
+    return dataResult(id, await getDataTables());
+  },
+
+  libreflow_create_data_table: async (id, args) => {
+    const { name: tName, columns = [], keyColumn } = args;
+    if (!tName) return missingParam(id, 'Missing name parameter');
+    const tId = `table-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    await saveDataTable(tId, tName, columns, keyColumn || null);
+    return rpcText(id, `Data table '${tName}' created successfully with ID: ${tId}`);
+  },
+
+  libreflow_upsert_data_table_row: async (id, args) => {
+    const { tableId: tId, data } = args;
+    if (!tId || !data || typeof data !== 'object') return missingParam(id, 'Missing tableId or data parameter');
+    return dataResult(id, await upsertDataTableRow(tId, data));
+  },
+
+  libreflow_increment_data_table_row: async (id, args) => {
+    const { tableId: tId, key, field, amount = 1 } = args;
+    if (!tId || !key || !field) return missingParam(id, 'Missing tableId, key or field parameter');
+    return dataResult(id, await incrementDataTableRow(tId, String(key), field, Number(amount) || 1));
+  },
+
+  libreflow_get_data_table_row: async (id, args) => {
+    const { tableId: tId, key, defaults = {} } = args;
+    if (!tId || !key) return missingParam(id, 'Missing tableId or key parameter');
+    return dataResult(id, await getOrCreateDataTableRow(tId, String(key), defaults && typeof defaults === 'object' ? defaults : {}));
+  },
+
+  libreflow_query_data_table_rows: async (id, args) => {
+    const { tableId: tId, filters = [], sort, limit } = args;
+    if (!tId) return missingParam(id, 'Missing tableId parameter');
+    const effLimit = Math.min(1000, Math.max(1, Number(limit) || AGENT_ROW_LIMIT));
+    const rows = await queryDataTableRows(tId, Array.isArray(filters) ? filters : [], { sort, limit: effLimit });
+    return dataResult(id, { returned: rows.length, limit: effLimit, truncated: rows.length >= effLimit, rows: rows.map(slimRow) });
+  },
+
+  libreflow_get_data_table_rows: async (id, args) => {
+    const tId = args.tableId;
+    if (!tId) return missingParam(id, 'Missing tableId parameter');
+    const limit = Math.min(1000, Math.max(1, Number(args.limit) || AGENT_ROW_LIMIT));
+    const offset = Math.max(0, Number(args.offset) || 0);
+    const total = await countDataTableRows(tId);
+    const rows = await getDataTableRows(tId, limit, offset);
+    return dataResult(id, { total, returned: rows.length, offset, truncated: offset + rows.length < total, rows: rows.map(slimRow) });
+  },
+
+  libreflow_add_data_table_rows: async (id, args) => {
+    const tId = args.tableId;
+    const rows = args.rows || [];
+    if (!tId || !Array.isArray(rows)) return missingParam(id, 'Missing tableId or invalid rows parameter');
+    const addedIds = await addDataTableRows(tId, rows);
+    return rpcText(id, `Successfully added ${addedIds.length} rows. IDs: ${addedIds.join(', ')}`);
+  },
+
+  libreflow_delete_workflow: async (id, args) => {
+    if (!args.id) return missingParam(id, 'Missing id parameter');
+    await deleteWorkflow(args.id);
+    return rpcText(id, `Workflow '${args.id}' deleted.`);
+  },
+
+  libreflow_set_workflow_active: async (id, args) => {
+    const wId = args.id;
+    const active = !!args.active;
+    if (!wId) return missingParam(id, 'Missing id parameter');
+    const workflow = await getWorkflowById(wId);
+    if (!workflow) return rpcText(id, `Workflow not found with ID: ${wId}`);
+    await setWorkflowActiveState(wId, active);
+    // Igual que el endpoint HTTP: (des)registra los triggers cron/webhook en memoria.
+    if (active) {
+      const fresh = await getWorkflowById(wId);
+      if (fresh) await triggerManager.startTriggers(fresh);
+    } else {
+      triggerManager.stopTriggers(wId);
+    }
+    return rpcText(id, `Workflow '${workflow.name}' ${active ? 'activated' : 'deactivated'}.`);
+  },
+
+  libreflow_search_data_table_rows: async (id, args) => {
+    const tId = args.tableId;
+    if (!tId) return missingParam(id, 'Missing tableId parameter');
+    const filters = (args.filters && typeof args.filters === 'object') ? args.filters : {};
+    const allRows = await getDataTableRows(tId);
+    const filtered = allRows.filter((row: any) => {
+      for (const [k, v] of Object.entries(filters)) {
+        if (String(row.data?.[k]) !== String(v)) return false;
+      }
+      return true;
+    });
+    return dataResult(id, filtered.map(slimRow));
+  },
+
+  libreflow_update_data_table_row: async (id, args) => {
+    const { rowId, data } = args;
+    if (!rowId || !data || typeof data !== 'object') return missingParam(id, 'Missing rowId or data parameter');
+    await updateDataTableRow(rowId, data);
+    return rpcText(id, `Row '${rowId}' updated.`);
+  },
+
+  libreflow_delete_data_table_row: async (id, args) => {
+    if (!args.rowId) return missingParam(id, 'Missing rowId parameter');
+    await deleteDataTableRow(args.rowId);
+    return rpcText(id, `Row '${args.rowId}' deleted.`);
+  },
+
+  libreflow_delete_data_table: async (id, args) => {
+    if (!args.tableId) return missingParam(id, 'Missing tableId parameter');
+    await deleteDataTable(args.tableId);
+    return rpcText(id, `Data table '${args.tableId}' deleted.`);
+  },
+};
+
+/** Ejecuta una tool de FLUJO (acotada al scope, casada por nombre único). */
+async function runWorkflowTool(id: any, toolName: any, args: any, scope: McpScope): Promise<RpcResult> {
+  const workflows = await resolveScopedWorkflows(scope);
+  const nameMap = assignUniqueToolNames(workflows);
+  const matchedWorkflow = workflows.find(w => nameMap.get(w.id) === toolName);
+  if (!matchedWorkflow) {
+    return rpcErr(id, -32601, `Tool not found or workflow not active: ${toolName}`);
+  }
+  const { executeWorkflowAndRecord } = await import('./executor.js');
+  const report = await executeWorkflowAndRecord(matchedWorkflow, args);
+
+  let responseText = '';
+  if (report.success) {
+    const succeededNodeOutputs: Record<string, any> = {};
+    for (const nodeRes of Object.values(report.nodeResults)) {
+      if (nodeRes.status === 'success') succeededNodeOutputs[nodeRes.nodeName] = nodeRes.output;
+    }
+    responseText = JSON.stringify({ success: true, message: `Workflow executed successfully`, outputs: succeededNodeOutputs });
+  } else {
+    const failedNode = Object.values(report.nodeResults).find(r => r.status === 'failed');
+    responseText = JSON.stringify({
+      success: false,
+      message: `Workflow execution failed at node: ${failedNode?.nodeName || 'unknown'}`,
+      error: failedNode?.error || 'Unknown error',
+    });
+  }
+  return rpcText(id, responseText);
+}
+
+async function handleToolsCall(id: any, params: any, scope: McpScope): Promise<RpcResult> {
+  const toolName = params?.name;
+  const toolArguments = params?.arguments || {};
+
+  if (typeof toolName === 'string' && toolName.startsWith('libreflow_')) {
+    // Las system tools solo son alcanzables si el scope las habilita.
+    if (!scope.exposeSystemTools) {
+      return rpcErr(id, -32601, `System tool not available on this server: ${toolName}`, 404);
+    }
+    const handler = SYSTEM_TOOL_HANDLERS[toolName];
+    if (!handler) return rpcErr(id, -32601, `System tool not found: ${toolName}`, 404);
+    return handler(id, toolArguments);
+  }
+
+  return runWorkflowTool(id, toolName, toolArguments, scope);
+}
+
 /**
- * Pure JSON-RPC dispatcher for the MCP protocol, parameterized by `scope`. Returns
- * the HTTP status + JSON-RPC payload so it can back both the global `/api/mcp`
- * endpoint and the per-server public endpoints (`/mcp/:id`). The caller owns the
- * transport (SSE connection check, auth) and writes the response.
+ * Núcleo JSON-RPC del MCP (única fuente). Enruta el método al handler correspondiente y
+ * normaliza errores. Devuelve { status HTTP, payload JSON-RPC } para que el llamante (global
+ * `/api/mcp` o los públicos `/mcp/:id`) controle el transporte (auth, conexión SSE) y escriba.
  */
 export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcResult> {
   const { id, method, params } = body;
-
   try {
-    if (method === 'initialize') {
-      const capabilities: any = { tools: {} };
-      if (scope.exposeResources) capabilities.resources = {};
-      return {
-        status: 200,
-        payload: {
-          jsonrpc: '2.0',
-          id,
-          result: {
-            protocolVersion: '2024-11-05',
-            capabilities,
-            serverInfo: { name: 'LibreFlow MCP Server', version: '1.0.0' }
-          }
-        }
-      };
-    }
-
-    // RESOURCES (solo lectura): las data-tables como contexto adjuntable por el host MCP.
-    // Distinto de las tools (acción llamada por el modelo). Solo si el scope lo permite.
-    if (method === 'resources/list') {
-      if (!scope.exposeResources) return { status: 200, payload: { jsonrpc: '2.0', id, result: { resources: [] } } };
-      const allTables = await getDataTables();
-      const tables = scope.ownerId === undefined
-        ? allTables
-        : (allTables || []).filter((t: any) => assertOwnership(t.owner_id ?? null, scope.ownerId ?? null, scope.isAdmin ?? false));
-      const tableResources = (tables || []).map((t: any) => ({
-        uri: `libreflow://datatable/${t.id}`,
-        name: t.name,
-        description: t.description || `Filas de la tabla de datos "${t.name}"`,
-        mimeType: 'application/json',
-      }));
-      // Definiciones de flujo como contexto (estructura del grafo, no ejecución).
-      const workflows = await resolveScopedWorkflows(scope);
-      const workflowResources = (workflows || []).map((w: any) => ({
-        uri: `libreflow://workflow/${w.id}`,
-        name: `Flujo: ${w.name}`,
-        description: w.description || `Definición del flujo "${w.name}" (nodos y conexiones)`,
-        mimeType: 'application/json',
-      }));
-      return { status: 200, payload: { jsonrpc: '2.0', id, result: { resources: [...tableResources, ...workflowResources] } } };
-    }
-
-    if (method === 'resources/read') {
-      if (!scope.exposeResources) {
-        return { status: 404, payload: { jsonrpc: '2.0', id, error: { code: -32601, message: 'Resources not enabled on this server' } } };
-      }
-      const uri = String(params?.uri || '');
-      const tableMatch = uri.match(/^libreflow:\/\/datatable\/(.+)$/);
-      if (tableMatch) {
-        const tableId = tableMatch[1];
-        if (scope.ownerId !== undefined) {
-          const t = await getDataTableById(tableId);
-          if (!t || !assertOwnership((t as any).owner_id ?? null, scope.ownerId ?? null, scope.isAdmin ?? false)) {
-            return { status: 200, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown resource uri: ${uri}` } } };
-          }
-        }
-        const rows = await queryDataTableRows(tableId, [], { limit: AGENT_ROW_LIMIT });
-        const out = {
-          table: tableId,
-          returned: rows.length,
-          limit: AGENT_ROW_LIMIT,
-          truncated: rows.length >= AGENT_ROW_LIMIT,
-          rows: rows.map(slimRow),
-        };
-        return { status: 200, payload: { jsonrpc: '2.0', id, result: { contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(out) }] } } };
-      }
-      const workflowMatch = uri.match(/^libreflow:\/\/workflow\/(.+)$/);
-      if (workflowMatch) {
-        const workflow = await getWorkflowById(workflowMatch[1]);
-        if (!workflow || (scope.ownerId !== undefined && !assertOwnership((workflow as any).owner_id ?? null, scope.ownerId ?? null, scope.isAdmin ?? false))) {
-          return { status: 200, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown resource uri: ${uri}` } } };
-        }
-        const def = {
-          id: workflow.id,
-          name: workflow.name,
-          description: workflow.description ?? null,
-          active: workflow.active ?? false,
-          nodes: workflow.nodes,
-          connections: workflow.connections,
-        };
-        return { status: 200, payload: { jsonrpc: '2.0', id, result: { contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(def) }] } } };
-      }
-      return { status: 200, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown resource uri: ${uri}` } } };
-    }
-
-    if (method === 'tools/list') {
-      const workflows = await resolveScopedWorkflows(scope);
-      const nameMap = assignUniqueToolNames(workflows);
-      const workflowTools = workflows.map(workflow => {
-        let inputSchema: any = { type: 'object', properties: {} };
-
-        const triggerNode = (workflow.nodes || []).find((n: any) => n.type === 'trigger');
-        if (triggerNode && triggerNode.parameters && triggerNode.parameters.inputSchema) {
-          try {
-            const parsed = typeof triggerNode.parameters.inputSchema === 'string'
-              ? JSON.parse(triggerNode.parameters.inputSchema)
-              : triggerNode.parameters.inputSchema;
-            if (parsed && typeof parsed === 'object') {
-              inputSchema = parsed;
-            }
-          } catch (err) {
-            // Fail silently and use default empty schema
-          }
-        }
-
-        return {
-          name: nameMap.get(workflow.id),
-          description: workflow.description || `Ejecuta el flujo LibreFlow: ${workflow.name}`,
-          inputSchema
-        };
-      });
-
-      const systemTools = SYSTEM_TOOLS.map(t =>
-        TOOL_ANNOTATIONS[t.name] ? { ...t, annotations: TOOL_ANNOTATIONS[t.name] } : t
-      );
-      const tools = scope.exposeSystemTools ? [...systemTools, ...workflowTools] : workflowTools;
-      return { status: 200, payload: { jsonrpc: '2.0', id, result: { tools } } };
-    }
-
-    if (method === 'tools/call') {
-      const toolName = params?.name;
-      const toolArguments = params?.arguments || {};
-
-      if (typeof toolName === 'string' && toolName.startsWith('libreflow_')) {
-        // System tools are only reachable when the scope opts into them.
-        if (!scope.exposeSystemTools) {
-          return { status: 404, payload: { jsonrpc: '2.0', id, error: { code: -32601, message: `System tool not available on this server: ${toolName}` } } };
-        }
-
-        if (toolName === 'libreflow_list_node_types') {
-          const list = NodeRegistry.getAllNodeTypes().map(nodeDef => {
-            const { execute, ...meta } = nodeDef;
-            return meta;
-          });
-          return dataResult(id, list);
-        }
-
-        if (toolName === 'libreflow_list_workflows') {
-          const list = await getWorkflows();
-          const cleanList = list.map(w => ({ id: w.id, name: w.name, active: w.active }));
-          return dataResult(id, cleanList);
-        }
-
-        if (toolName === 'libreflow_get_workflow') {
-          const wId = toolArguments.id;
-          if (!wId) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing id parameter' } } };
-          }
-          const workflow = await getWorkflowById(wId);
-          if (!workflow) {
-            return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Workflow not found with ID: ${wId}` }] } } };
-          }
-          return dataResult(id, workflow);
-        }
-
-        if (toolName === 'libreflow_save_workflow') {
-          const { id: wId, name: wName, nodes = [], connections = [], onErrorWorkflowId, description: wDesc } = toolArguments;
-          if (!wId || !wName) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing id or name parameter' } } };
-          }
-          await saveWorkflow(wId, wName, nodes, connections, onErrorWorkflowId, wDesc);
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Workflow '${wName}' saved successfully.` }] } } };
-        }
-
-        if (toolName === 'libreflow_run_workflow') {
-          const wId = toolArguments.workflowId;
-          const payload = toolArguments.payload || {};
-          if (!wId) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing workflowId parameter' } } };
-          }
-          const workflow = await getWorkflowById(wId);
-          if (!workflow) {
-            return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Workflow not found with ID: ${wId}` }] } } };
-          }
-          const { executeWorkflowAndRecord } = await import('./executor.js');
-          const report = await executeWorkflowAndRecord(workflow, payload);
-          // Concise by default: just success + succeeded-node outputs (+ error). The full
-          // node-by-node report is verbose; fetch it with concise:false or get_execution.
-          if (toolArguments.concise === false) {
-            return dataResult(id, report);
-          }
-          const outputs: Record<string, any> = {};
-          for (const r of Object.values(report.nodeResults)) {
-            if (r.status === 'success') outputs[r.nodeName] = r.output;
-          }
-          const concise: any = { success: report.success, durationMs: report.durationMs, outputs };
-          if (!report.success) {
-            const failed = Object.values(report.nodeResults).find(r => r.status === 'failed');
-            concise.error = failed ? { node: failed.nodeName, message: failed.error } : 'unknown error';
-          }
-          return dataResult(id, concise);
-        }
-
-        if (toolName === 'libreflow_list_executions') {
-          const list = await getAllExecutions();
-          const out = { returned: list.length, truncated: list.length >= 100, executions: list };
-          return dataResult(id, out);
-        }
-
-        if (toolName === 'libreflow_get_execution') {
-          const execId = toolArguments.id;
-          if (!execId) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing id parameter' } } };
-          }
-          const execution = await getExecutionById(execId);
-          if (!execution) {
-            return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Execution not found with ID: ${execId}` }] } } };
-          }
-          return dataResult(id, execution);
-        }
-
-        if (toolName === 'libreflow_validate_workflow') {
-          const { nodes = [], connections = [] } = toolArguments;
-          const result = validateWorkflow(nodes, connections);
-          return dataResult(id, result);
-        }
-
-        if (toolName === 'libreflow_list_data_tables') {
-          const list = await getDataTables();
-          return dataResult(id, list);
-        }
-
-        if (toolName === 'libreflow_create_data_table') {
-          const { name: tName, columns = [], keyColumn } = toolArguments;
-          if (!tName) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing name parameter' } } };
-          }
-          const tId = `table-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-          await saveDataTable(tId, tName, columns, keyColumn || null);
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Data table '${tName}' created successfully with ID: ${tId}` }] } } };
-        }
-
-        if (toolName === 'libreflow_upsert_data_table_row') {
-          const { tableId: tId, data } = toolArguments;
-          if (!tId || !data || typeof data !== 'object') {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId or data parameter' } } };
-          }
-          const row = await upsertDataTableRow(tId, data);
-          return dataResult(id, row);
-        }
-
-        if (toolName === 'libreflow_increment_data_table_row') {
-          const { tableId: tId, key, field, amount = 1 } = toolArguments;
-          if (!tId || !key || !field) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId, key or field parameter' } } };
-          }
-          const row = await incrementDataTableRow(tId, String(key), field, Number(amount) || 1);
-          return dataResult(id, row);
-        }
-
-        if (toolName === 'libreflow_get_data_table_row') {
-          const { tableId: tId, key, defaults = {} } = toolArguments;
-          if (!tId || !key) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId or key parameter' } } };
-          }
-          const row = await getOrCreateDataTableRow(tId, String(key), defaults && typeof defaults === 'object' ? defaults : {});
-          return dataResult(id, row);
-        }
-
-        if (toolName === 'libreflow_query_data_table_rows') {
-          const { tableId: tId, filters = [], sort, limit } = toolArguments;
-          if (!tId) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId parameter' } } };
-          }
-          const effLimit = Math.min(1000, Math.max(1, Number(limit) || AGENT_ROW_LIMIT));
-          const rows = await queryDataTableRows(tId, Array.isArray(filters) ? filters : [], { sort, limit: effLimit });
-          const out = { returned: rows.length, limit: effLimit, truncated: rows.length >= effLimit, rows: rows.map(slimRow) };
-          return dataResult(id, out);
-        }
-
-        if (toolName === 'libreflow_get_data_table_rows') {
-          const tId = toolArguments.tableId;
-          if (!tId) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId parameter' } } };
-          }
-          const limit = Math.min(1000, Math.max(1, Number(toolArguments.limit) || AGENT_ROW_LIMIT));
-          const offset = Math.max(0, Number(toolArguments.offset) || 0);
-          const total = await countDataTableRows(tId);
-          const rows = await getDataTableRows(tId, limit, offset);
-          const out = { total, returned: rows.length, offset, truncated: offset + rows.length < total, rows: rows.map(slimRow) };
-          return dataResult(id, out);
-        }
-
-        if (toolName === 'libreflow_add_data_table_rows') {
-          const tId = toolArguments.tableId;
-          const rows = toolArguments.rows || [];
-          if (!tId || !Array.isArray(rows)) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId or invalid rows parameter' } } };
-          }
-          const addedIds = await addDataTableRows(tId, rows);
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Successfully added ${addedIds.length} rows. IDs: ${addedIds.join(', ')}` }] } } };
-        }
-
-        if (toolName === 'libreflow_delete_workflow') {
-          const wId = toolArguments.id;
-          if (!wId) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing id parameter' } } };
-          }
-          await deleteWorkflow(wId);
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Workflow '${wId}' deleted.` }] } } };
-        }
-
-        if (toolName === 'libreflow_set_workflow_active') {
-          const wId = toolArguments.id;
-          const active = !!toolArguments.active;
-          if (!wId) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing id parameter' } } };
-          }
-          const workflow = await getWorkflowById(wId);
-          if (!workflow) {
-            return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Workflow not found with ID: ${wId}` }] } } };
-          }
-          await setWorkflowActiveState(wId, active);
-          // Mirror the HTTP endpoint: (de)register cron/webhook triggers in memory.
-          if (active) {
-            const fresh = await getWorkflowById(wId);
-            if (fresh) await triggerManager.startTriggers(fresh);
-          } else {
-            triggerManager.stopTriggers(wId);
-          }
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Workflow '${workflow.name}' ${active ? 'activated' : 'deactivated'}.` }] } } };
-        }
-
-        if (toolName === 'libreflow_search_data_table_rows') {
-          const tId = toolArguments.tableId;
-          if (!tId) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId parameter' } } };
-          }
-          const filters = (toolArguments.filters && typeof toolArguments.filters === 'object') ? toolArguments.filters : {};
-          const allRows = await getDataTableRows(tId);
-          const filtered = allRows.filter((row: any) => {
-            for (const [k, v] of Object.entries(filters)) {
-              if (String(row.data?.[k]) !== String(v)) return false;
-            }
-            return true;
-          });
-          return dataResult(id, filtered.map(slimRow));
-        }
-
-        if (toolName === 'libreflow_update_data_table_row') {
-          const rowId = toolArguments.rowId;
-          const data = toolArguments.data;
-          if (!rowId || !data || typeof data !== 'object') {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing rowId or data parameter' } } };
-          }
-          await updateDataTableRow(rowId, data);
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Row '${rowId}' updated.` }] } } };
-        }
-
-        if (toolName === 'libreflow_delete_data_table_row') {
-          const rowId = toolArguments.rowId;
-          if (!rowId) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing rowId parameter' } } };
-          }
-          await deleteDataTableRow(rowId);
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Row '${rowId}' deleted.` }] } } };
-        }
-
-        if (toolName === 'libreflow_delete_data_table') {
-          const tId = toolArguments.tableId;
-          if (!tId) {
-            return { status: 400, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: 'Missing tableId parameter' } } };
-          }
-          await deleteDataTable(tId);
-          return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: `Data table '${tId}' deleted.` }] } } };
-        }
-
-        return { status: 404, payload: { jsonrpc: '2.0', id, error: { code: -32601, message: `System tool not found: ${toolName}` } } };
-      }
-
-      // Workflow tools — only those within the current scope, matched by unique name.
-      const workflows = await resolveScopedWorkflows(scope);
-      const nameMap = assignUniqueToolNames(workflows);
-      const matchedWorkflow = workflows.find(w => nameMap.get(w.id) === toolName);
-
-      if (!matchedWorkflow) {
-        return { status: 200, payload: { jsonrpc: '2.0', id, error: { code: -32601, message: `Tool not found or workflow not active: ${toolName}` } } };
-      }
-
-      const { executeWorkflowAndRecord } = await import('./executor.js');
-      const report = await executeWorkflowAndRecord(matchedWorkflow, toolArguments);
-
-      let responseText = '';
-      if (report.success) {
-        const succeededNodeOutputs: Record<string, any> = {};
-        for (const [nodeId, nodeRes] of Object.entries(report.nodeResults)) {
-          if (nodeRes.status === 'success') {
-            succeededNodeOutputs[nodeRes.nodeName] = nodeRes.output;
-          }
-        }
-        responseText = JSON.stringify({
-          success: true,
-          message: `Workflow executed successfully`,
-          outputs: succeededNodeOutputs
-        });
-      } else {
-        const failedNode = Object.values(report.nodeResults).find(r => r.status === 'failed');
-        responseText = JSON.stringify({
-          success: false,
-          message: `Workflow execution failed at node: ${failedNode?.nodeName || 'unknown'}`,
-          error: failedNode?.error || 'Unknown error'
-        });
-      }
-
-      return { status: 200, payload: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: responseText }] } } };
-    }
-
-    return { status: 404, payload: { jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } } };
+    if (method === 'initialize') return handleInitialize(id, scope);
+    if (method === 'resources/list') return await handleResourcesList(id, scope);
+    if (method === 'resources/read') return await handleResourcesRead(id, params, scope);
+    if (method === 'tools/list') return await handleToolsList(id, scope);
+    if (method === 'tools/call') return await handleToolsCall(id, params, scope);
+    return rpcErr(id, -32601, `Method not found: ${method}`, 404);
   } catch (err: any) {
     return { status: 500, payload: { jsonrpc: '2.0', id: id || null, error: { code: -32603, message: err.message } } };
   }
