@@ -198,7 +198,7 @@ export class WorkflowEngine {
   async execute(
     workflow: Workflow,
     initialPayload: Record<string, any> = {},
-    execMeta: { depth?: number; stack?: string[]; executionId?: string; usePinData?: boolean } = {},
+    execMeta: { depth?: number; stack?: string[]; executionId?: string; usePinData?: boolean; ownerId?: string | null; isAdmin?: boolean } = {},
     resume?: ResumeState
   ): Promise<WorkflowExecutionReport> {
     const genToken = () => 'rsm-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
@@ -214,6 +214,8 @@ export class WorkflowEngine {
     const wfId = (workflow as any).id;
     const execStack = execMeta.stack ?? (wfId ? [wfId] : []);
     const execExecutionId = execMeta.executionId;
+    const execOwnerId = execMeta.ownerId ?? null;     // F2b: dueño del flujo en ejecución
+    const execIsAdmin = execMeta.isAdmin ?? false;
     const usePinData = execMeta.usePinData ?? false;
 
     // --- Build helper maps ---
@@ -316,7 +318,7 @@ export class WorkflowEngine {
             node,
             context,
             incomingInputs,
-            { depth: execDepth, stack: execStack, executionId: execExecutionId },
+            { depth: execDepth, stack: execStack, executionId: execExecutionId, ownerId: execOwnerId, isAdmin: execIsAdmin },
             nodeParamOverrides.get(node.id)
           );
           ok = true;

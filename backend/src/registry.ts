@@ -1,6 +1,6 @@
 import { LibreFlowNodeDefinition } from './sdk.js';
 import { WorkflowSuspendError } from './engine.js';
-import { getCredentialById, getWorkflowById, getBinary } from './db.js';
+import { getCredentialById, getWorkflowById, getBinary, assertOwnership } from './db.js';
 import { storeBinary, isBinaryRef, fileNameFromUrl, readResponseCapped, MAX_BINARY_BYTES } from './binary.js';
 import { parseFileBuffer, serializeToFile, detectFormat, parsePdfBuffer, parseXlsxBuffer, serializeXlsxFile, FileFormat } from './fileParse.js';
 import { compareValues, filterItems, summarize, sortItems, limitItems, uniqueItems, Aggregation, mergeAnswers, ConsensusStrategy } from './collections.js';
@@ -16,7 +16,7 @@ import { getOAuth2AccessToken } from './oauth2.js';
  * Bearer con token obtenido/renovado automáticamente), shared by httpRequest, mcpToolCall
  * and aiAgent.
  */
-export async function resolveCredentialAuth(credentialId?: string): Promise<{ headers: Record<string, string>; query: Record<string, string> }> {
+export async function resolveCredentialAuth(credentialId?: string, ownerId?: string | null, isAdmin = false): Promise<{ headers: Record<string, string>; query: Record<string, string> }> {
   const headers: Record<string, string> = {};
   const query: Record<string, string> = {};
   if (!credentialId) return { headers, query };
@@ -24,6 +24,12 @@ export async function resolveCredentialAuth(credentialId?: string): Promise<{ he
   if (!cred || !cred.data) {
     console.warn(`[Credential] Not found or failed to load: ${credentialId}`);
     return { headers, query };
+  }
+  // F2b (aislamiento multi-usuario): si el flujo en ejecución TIENE dueño, solo puede usar
+  // credenciales de ese dueño (admin exento). Flujos sin dueño (single-tenant/dev/legacy) no
+  // se enforzan → compatibilidad hacia atrás.
+  if (ownerId && !assertOwnership((cred as any).owner_id, ownerId, isAdmin)) {
+    throw new Error(`La credencial "${credentialId}" no pertenece al dueño del flujo (aislamiento multi-usuario).`);
   }
   if (cred.type === 'basicAuth') {
     const { user = '', password = '' } = cred.data;
@@ -376,7 +382,7 @@ const httpRequestNode: LibreFlowNodeDefinition = {
     let requestUrl = url;
 
     if (authentication === 'genericCredential' && credentialId) {
-      const auth = await resolveCredentialAuth(credentialId);
+      const auth = await resolveCredentialAuth(credentialId, execMeta?.ownerId, execMeta?.isAdmin);
       Object.assign(headerObj, auth.headers);
       requestUrl = appendQueryParams(requestUrl, auth.query);
     }
@@ -784,6 +790,12 @@ const executeWorkflowNode: LibreFlowNodeDefinition = {
       throw new Error(`Sub-workflow Node error: Workflow with ID ${targetWorkflowId} not found`);
     }
 
+    // F2b: un flujo solo puede invocar sub-flujos de su mismo dueño (admin exento). Si el
+    // flujo padre tiene dueño, el destino debe coincidir; si no, mismo mensaje que "no encontrado".
+    if (execMeta?.ownerId && !assertOwnership((workflow as any).owner_id, execMeta.ownerId, execMeta?.isAdmin ?? false)) {
+      throw new Error(`Sub-workflow Node error: Workflow with ID ${targetWorkflowId} not found`);
+    }
+
     let initialPayload = {};
     if (payload) {
       if (typeof payload === 'string') {
@@ -802,6 +814,8 @@ const executeWorkflowNode: LibreFlowNodeDefinition = {
     const report = await subEngine.execute(workflow, initialPayload, {
       depth: depth + 1,
       stack: [...stack, targetWorkflowId],
+      ownerId: execMeta?.ownerId ?? null,
+      isAdmin: execMeta?.isAdmin ?? false,
     });
 
     if (!report.success) {
@@ -907,7 +921,7 @@ const mcpToolCallNode: LibreFlowNodeDefinition = {
       default: []
     }
   ],
-  execute: async (params) => {
+  execute: async (params, _context, _inputs, execMeta) => {
     const { serverUrl, toolName, arguments: argsList, authentication = 'none', credentialId } = params;
     if (!serverUrl || !toolName) {
       throw new Error('MCP Tool Call Node error: serverUrl and toolName are required');
@@ -937,7 +951,7 @@ const mcpToolCallNode: LibreFlowNodeDefinition = {
     let requestUrl = serverUrl;
     let headers: Record<string, string> = {};
     if (authentication === 'genericCredential' && credentialId) {
-      const auth = await resolveCredentialAuth(credentialId);
+      const auth = await resolveCredentialAuth(credentialId, execMeta?.ownerId, execMeta?.isAdmin);
       headers = auth.headers;
       requestUrl = appendQueryParams(serverUrl, auth.query);
     }
@@ -1495,7 +1509,7 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       description: 'Objeto JSON con los argumentos del prompt MCP.'
     }
   ],
-  execute: async (params) => {
+  execute: async (params, _context, _inputs, execMeta) => {
     const {
       endpoint = 'http://localhost:1234/v1',
       model,
@@ -1527,7 +1541,7 @@ const aiAgentNode: LibreFlowNodeDefinition = {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     let llmEndpoint = endpoint;
     if (authentication === 'genericCredential' && credentialId) {
-      const auth = await resolveCredentialAuth(credentialId);
+      const auth = await resolveCredentialAuth(credentialId, execMeta?.ownerId, execMeta?.isAdmin);
       Object.assign(headers, auth.headers);
       llmEndpoint = appendQueryParams(endpoint, auth.query);
     }
@@ -1553,7 +1567,7 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       // External MCP: auth from the vault, ONE persistent client session reused across the
       // loop (avoids a connect+initialize handshake per tool call).
       const mcpAuth = (mcpAuthentication === 'genericCredential' && mcpCredentialId)
-        ? await resolveCredentialAuth(mcpCredentialId)
+        ? await resolveCredentialAuth(mcpCredentialId, execMeta?.ownerId, execMeta?.isAdmin)
         : { headers: {}, query: {} };
       const url = appendQueryParams(mcpServerUrl, mcpAuth.query);
       const { openMcpClientSession, loadSkillsFromSession, loadPromptMessages } = await import('./mcp.js');

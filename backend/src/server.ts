@@ -180,8 +180,12 @@ app.post('/api/workflows/run', async (req, res) => {
       resume = buildRerunResume(workflow, rerunFrom, priorResults);
     }
 
-    // Manual test run from the editor: honor pinned node data (`pinData`).
-    const report = await executeWorkflowAndRecord(workflow, payload, { usePinData: true, resume });
+    // Manual test run from the editor: honor pinned node data (`pinData`). Corre bajo el
+    // usuario autenticado (F2b): solo puede usar SUS credenciales (admin, cualquiera).
+    const u = (req as any).user;
+    const report = await executeWorkflowAndRecord(workflow, payload, {
+      usePinData: true, resume, ownerId: u?.id ?? null, isAdmin: u?.role === 'admin',
+    });
     return res.json(report);
   } catch (err: any) {
     // Workflow-structure errors are user-facing; everything else is masked.
