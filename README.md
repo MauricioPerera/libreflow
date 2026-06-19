@@ -165,6 +165,8 @@ global `LF_API_KEY` (admin break-glass). Resources are scoped by `owner_id` (adm
   `GET /oauth/callback` (provider redirect) + `GET /api/oauth/redirect-uri` (URI to register)
 - `GET|POST|DELETE /api/mcp-servers[/:id]` — named MCP servers (curated workflow groups)
 - `GET|POST|DELETE /api/credentials[/:id]`, `GET|POST|DELETE /api/data-tables[/:id]` (+ `/rows`)
+- `GET /api/vector-stores`, `DELETE /api/vector-stores/:collection` — RAG collections (owner-scoped;
+  filled by the `vectorStore` node's `index`/`indexTable` ops)
 - `*  /hooks/:workflowId` — webhook trigger (HMAC-verified when `LF_WEBHOOK_SECRET` is set).
   Synchronous when the trigger's `responseMode` is `lastNode`/`respondNode` (bounded by
   `LF_WEBHOOK_SYNC_TIMEOUT_MS`); otherwise acks immediately and runs in the background.

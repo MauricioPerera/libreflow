@@ -80,9 +80,9 @@ check `/tmp/lf-dev.log`.
 
 The engine logic is reachable without the UI — most changes are testable here:
 ```bash
-# list registered node types (19: trigger,set,httpRequest,jsCode,if,log,merge,
+# list registered node types (20: trigger,set,httpRequest,jsCode,if,log,merge,
 #   executeWorkflow,loop,mcpToolCall,dataTable,extractFromFile,convertToFile,
-#   switch,filter,aggregate,aiAgent,respond,wait)
+#   switch,filter,aggregate,aiAgent,respond,wait,vectorStore)
 curl -s http://localhost:3000/api/node-types
 
 # run an ad-hoc workflow (no save needed)
@@ -103,6 +103,10 @@ Workflow shape: `nodes[]` = `{id,type,name,parameters}`, `connections[]` =
 - `aiAgent` node runs an LLM tool-calling loop against an OpenAI-compatible endpoint
   (e.g. LM Studio at `http://localhost:1234/v1`) with an MCP server as its toolset. Not
   exercised by the driver (needs an external LLM); test it manually when one is available.
+- `vectorStore` node (RAG): ops `index`/`indexTable`/`search` over collections stored in
+  LibreFlow's own SQLite (`js-vector-store`). Embeddings via an OpenAI-compatible
+  `POST <endpoint>/embeddings`; needs an external embeddings model (same caveat as `aiAgent`).
+  Collections are listable/deletable at `GET`/`DELETE /api/vector-stores`.
 
 ## Run (human path)
 
