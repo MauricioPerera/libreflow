@@ -159,8 +159,12 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   `ownerId`/`isAdmin` (manual run = `req.user`; triggered = flow `owner_id`) into `execMeta`, and
   `resolveCredentialAuth(credId, ownerId, isAdmin)` refuses a credential whose `owner_id` ≠ the
   flow owner (admin exempt; flows without an owner are not enforced → single-tenant back-compat).
-  Sub-workflows must share the owner. **Pending: route-level read/list scoping (F2c) + global-MCP
-  per-user scoping (F2-MCP)** — until those land, the API still lists across users.
+  Sub-workflows must share the owner. **Route scoping (F2c):** every `/api` resource route filters
+  lists and authorizes by-id by `owner_id` via `canAccess`/`scopeList` (foreign → 404; admin sees
+  all). **Global MCP (F2-MCP):** `POST /api/mcp` scopes active workflows + data-table/workflow
+  resources to `req.user` (named servers unchanged). Cross-user isolation is covered by an HTTP
+  anti-leak suite (`auth-f2d-isolation.test.ts`, supertest). Single-tenant (no `owner_id`) and admin
+  are unaffected.
 - **mcp.ts** — MCP server **and** client, via the official SDK (`@modelcontextprotocol/sdk`).
   `dispatchMcpRpc(body, scope)` is the single JSON-RPC source of truth (scope = which
   workflows + whether the `libreflow_*` system tools are exposed). Transports: **Streamable

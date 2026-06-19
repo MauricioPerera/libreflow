@@ -22,7 +22,9 @@ import {
   incrementDataTableRow,
   getOrCreateDataTableRow,
   queryDataTableRows,
-  countDataTableRows
+  countDataTableRows,
+  getDataTableById,
+  assertOwnership
 } from './db.js';
 
 // Default cap on rows/items returned to an agent — protects its context window.
@@ -461,11 +463,18 @@ export interface McpScope {
   // Expone las data-tables como RESOURCES MCP de solo lectura. Solo en el server global
   // (tras auth); los named servers son exposiciones curadas de tools (v1: sin resources).
   exposeResources?: boolean;
+  // F2-MCP: el server global expone solo los flujos del usuario autenticado (admin = todos).
+  // Para `workflowIds: null` (global), `ownerId`/`isAdmin` acotan getActiveWorkflows.
+  ownerId?: string | null;
+  isAdmin?: boolean;
 }
 
 async function resolveScopedWorkflows(scope: McpScope): Promise<any[]> {
   if (scope.workflowIds === null) {
-    return await getActiveWorkflows();
+    const active = await getActiveWorkflows();
+    // F2-MCP: si hay dueño en el scope, filtra a los suyos (admin ve todos).
+    if (scope.ownerId === undefined) return active;
+    return active.filter((w: any) => assertOwnership(w.owner_id ?? null, scope.ownerId ?? null, scope.isAdmin ?? false));
   }
   return await getWorkflowsByIds(scope.workflowIds);
 }
@@ -522,7 +531,10 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
     // Distinto de las tools (acción llamada por el modelo). Solo si el scope lo permite.
     if (method === 'resources/list') {
       if (!scope.exposeResources) return { status: 200, payload: { jsonrpc: '2.0', id, result: { resources: [] } } };
-      const tables = await getDataTables();
+      const allTables = await getDataTables();
+      const tables = scope.ownerId === undefined
+        ? allTables
+        : (allTables || []).filter((t: any) => assertOwnership(t.owner_id ?? null, scope.ownerId ?? null, scope.isAdmin ?? false));
       const tableResources = (tables || []).map((t: any) => ({
         uri: `libreflow://datatable/${t.id}`,
         name: t.name,
@@ -548,6 +560,12 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
       const tableMatch = uri.match(/^libreflow:\/\/datatable\/(.+)$/);
       if (tableMatch) {
         const tableId = tableMatch[1];
+        if (scope.ownerId !== undefined) {
+          const t = await getDataTableById(tableId);
+          if (!t || !assertOwnership((t as any).owner_id ?? null, scope.ownerId ?? null, scope.isAdmin ?? false)) {
+            return { status: 200, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown resource uri: ${uri}` } } };
+          }
+        }
         const rows = await queryDataTableRows(tableId, [], { limit: AGENT_ROW_LIMIT });
         const out = {
           table: tableId,
@@ -561,7 +579,7 @@ export async function dispatchMcpRpc(body: any, scope: McpScope): Promise<RpcRes
       const workflowMatch = uri.match(/^libreflow:\/\/workflow\/(.+)$/);
       if (workflowMatch) {
         const workflow = await getWorkflowById(workflowMatch[1]);
-        if (!workflow) {
+        if (!workflow || (scope.ownerId !== undefined && !assertOwnership((workflow as any).owner_id ?? null, scope.ownerId ?? null, scope.isAdmin ?? false))) {
           return { status: 200, payload: { jsonrpc: '2.0', id, error: { code: -32602, message: `Unknown resource uri: ${uri}` } } };
         }
         const def = {
@@ -972,7 +990,7 @@ function methodNotAllowed(_req: any, res: Response) {
 }
 
 // Global server (POST /api/mcp): all active workflows + system tools.
-router.post('/', (req, res) => handleStreamableHttp(req, res, { workflowIds: null, exposeSystemTools: true, exposeResources: true }));
+router.post('/', (req, res) => handleStreamableHttp(req, res, { workflowIds: null, exposeSystemTools: true, exposeResources: true, ownerId: (req as any).user?.id, isAdmin: (req as any).user?.role === 'admin' }));
 router.get('/', methodNotAllowed);
 router.delete('/', methodNotAllowed);
 
@@ -1000,7 +1018,7 @@ router.post('/message', async (req, res) => {
     return res.status(400).json({ jsonrpc: '2.0', id: req.body.id || null, error: { code: -32600, message: 'Invalid Request' } });
   }
 
-  const { status, payload } = await dispatchMcpRpc(req.body, { workflowIds: null, exposeSystemTools: true, exposeResources: true });
+  const { status, payload } = await dispatchMcpRpc(req.body, { workflowIds: null, exposeSystemTools: true, exposeResources: true, ownerId: (req as any).user?.id, isAdmin: (req as any).user?.role === 'admin' });
   return res.status(status).json(payload);
 });
 

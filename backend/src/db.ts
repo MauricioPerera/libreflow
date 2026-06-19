@@ -292,17 +292,18 @@ async function addColumnIfMissing(table: string, column: string, definition: str
 }
 
 export async function getWorkflows() {
-  return db.all('SELECT id, name, description, active, onErrorWorkflowId, created_at, updated_at FROM workflows ORDER BY updated_at DESC');
+  return db.all('SELECT id, name, description, active, onErrorWorkflowId, owner_id, created_at, updated_at FROM workflows ORDER BY updated_at DESC');
 }
 
 /** Todos los flujos con su grafo (nodes/connections parseados). Para validación en lote. */
 export async function getAllWorkflowsWithGraph() {
-  const list = await db.all('SELECT id, name, nodes, connections FROM workflows ORDER BY updated_at DESC');
+  const list = await db.all('SELECT id, name, nodes, connections, owner_id FROM workflows ORDER BY updated_at DESC');
   return list.map(w => ({
     id: w.id,
     name: w.name,
     nodes: JSON.parse(w.nodes),
     connections: JSON.parse(w.connections),
+    owner_id: w.owner_id ?? null,
   }));
 }
 
@@ -437,7 +438,7 @@ export async function getExecutions(workflowId: string) {
 
 export async function getAllExecutions() {
   return db.all(`
-    SELECT e.id, e.status, e.executed_at, w.name as workflow_name, w.id as workflow_id
+    SELECT e.id, e.status, e.executed_at, w.name as workflow_name, w.id as workflow_id, w.owner_id as owner_id
     FROM executions e
     JOIN workflows w ON e.workflow_id = w.id
     ORDER BY e.executed_at DESC
@@ -454,7 +455,7 @@ export async function getExecutionById(id: string) {
 }
 
 export async function getCredentials() {
-  return db.all('SELECT id, name, type, created_at, updated_at FROM credentials ORDER BY updated_at DESC');
+  return db.all('SELECT id, name, type, owner_id, created_at, updated_at FROM credentials ORDER BY updated_at DESC');
 }
 
 export async function getCredentialById(id: string) {
