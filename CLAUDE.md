@@ -170,7 +170,13 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   For supertest, `server.ts` exports `app` and skips `app.listen` under `VITEST`.
 - **mcp.ts** — MCP server **and** client, via the official SDK (`@modelcontextprotocol/sdk`).
   `dispatchMcpRpc(body, scope)` is the single JSON-RPC source of truth (scope = which
-  workflows + whether the `libreflow_*` system tools are exposed). Transports: **Streamable
+  workflows + whether the `libreflow_*` system tools are exposed + optional `ownerId`/`isAdmin`).
+  **Owner scoping (F2-MCP/F3):** `resolveScopedWorkflows` filters the exposed workflows by
+  `scope.ownerId` (on BOTH the global `workflowIds:null` path and named `workflowIds:[…]` path);
+  resources (datatable/workflow) honor it too. `ownerId === undefined` ⇒ no scoping (single-tenant
+  back-compat). The global server passes `req.user`; a **named server** passes its own `owner_id`
+  (so it only exposes its owner's flows); the **aiAgent's in-process toolset** passes the running
+  flow's `execMeta.ownerId` (crosses F2b — the agent can only invoke same-owner flows). Transports: **Streamable
   HTTP** (current spec) at `POST /api/mcp` (global) and `POST /mcp/:serverId` (named servers);
   legacy SSE kept for back-compat. The global server also exposes **resources** (`scope.exposeResources`):
   the data-tables as read-only MCP resources (`libreflow://datatable/{id}`, rows capped by
