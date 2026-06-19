@@ -210,7 +210,8 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
     whole form + the OAuth connect flow — popup, `e.origin`-checked `postMessage`, listener
     cleaned on unmount).
   - Editor: `CustomNode` (pin badge), `NodeConfigPanel` (param form, inline JSON/cron
-    validation, pin/re-run controls), `ExpressionEditor`, `JsonTreeItem` (binary refs → download).
+    validation, pin/re-run controls), `NodePalette` (left node-add panel + collapse toggle;
+    `v-model:collapsed`, `@add`), `ExpressionEditor`, `JsonTreeItem` (binary refs → download).
 - **utils.ts** — pure helpers (no reactive state): `statusLabel`, `formatFullDate`,
   `credentialTypeLabel`, `mcpServerUrl`, `setNestedValue` (prototype-pollution-guarded),
   `parseJsonColumns`, `coerceRowByColumns`. Unit-tested.
