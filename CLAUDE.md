@@ -211,7 +211,9 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
     cleaned on unmount).
   - Editor: `CustomNode` (pin badge), `NodeConfigPanel` (param form, inline JSON/cron
     validation, pin/re-run controls), `NodePalette` (left node-add panel + collapse toggle;
-    `v-model:collapsed`, `@add`), `ExpressionEditor`, `JsonTreeItem` (binary refs → download).
+    `v-model:collapsed`, `@add`), `EditorHeader` (toolbar: back/name/active-toggle/save/run +
+    version-preview banner; `v-model:workflow-name`/`v-model:active`), `ExpressionEditor`,
+    `JsonTreeItem` (binary refs → download).
 - **utils.ts** — pure helpers (no reactive state): `statusLabel`, `formatFullDate`,
   `credentialTypeLabel`, `mcpServerUrl`, `setNestedValue` (prototype-pollution-guarded),
   `parseJsonColumns`, `coerceRowByColumns`. Unit-tested.
