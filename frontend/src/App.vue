@@ -88,6 +88,14 @@
         @copy="copyMcpText"
       />
 
+      <!-- VECTOR STORES SUBVIEW (RAG) -->
+      <VectorStoresView
+        v-if="activeSubView === 'vectorstores'"
+        :stores="vectorStoresList"
+        :loaded="dashboardLoaded"
+        @delete="deleteVectorStore"
+      />
+
       <!-- USERS SUBVIEW (solo admin) -->
       <UsersAdminView
         v-if="activeSubView === 'users' && isAdmin"
@@ -322,6 +330,8 @@ import { useNodeTypes } from './composables/useNodeTypes';
 import { useMcpServers } from './composables/useMcpServers';
 import { useDataTables } from './composables/useDataTables';
 import { useWorkflowVersions } from './composables/useWorkflowVersions';
+import { useVectorStores } from './composables/useVectorStores';
+import VectorStoresView from './components/VectorStoresView.vue';
 import { statusLabel, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
 // Sesión (multi-usuario). null = no autenticado → se muestra el login.
@@ -330,7 +340,8 @@ const isAdmin = computed(() => currentUser.value?.role === 'admin');
 
 // Screen Routing states
 const currentView = ref<'dashboard' | 'editor'>('dashboard');
-const activeSubView = ref<'workflows' | 'executions' | 'credentials' | 'datatables' | 'mcpservers' | 'users'>('workflows');
+const activeSubView = ref<'workflows' | 'executions' | 'credentials' | 'datatables' | 'mcpservers' | 'vectorstores' | 'users'>('workflows');
+const { vectorStoresList, fetchVectorStores } = useVectorStores();
 
 // MCP servers state (lista + fetch en el composable; el CRUD se queda abajo)
 const { mcpServersList, fetchMcpServers } = useMcpServers();
@@ -1389,6 +1400,18 @@ const onSelectSubView = (view: string) => {
   else if (view === 'credentials') fetchCredentials();
   else if (view === 'datatables') fetchDataTables();
   else if (view === 'mcpservers') { fetchMcpServers(); fetchSavedWorkflows(); }
+  else if (view === 'vectorstores') fetchVectorStores();
+};
+
+// Borra una colección de vectores y recarga la lista.
+const deleteVectorStore = async (collection: string) => {
+  if (!confirm(`¿Borrar la colección de vectores "${collection}" de forma permanente?`)) return;
+  try {
+    const res = await fetch(`/api/vector-stores/${encodeURIComponent(collection)}`, { method: 'DELETE' });
+    if (res.ok) await fetchVectorStores();
+  } catch (err) {
+    console.error('Error deleting vector store:', err);
+  }
 };
 
 // Cambia la pestaña del panel derecho del editor; la de versiones recarga el historial.

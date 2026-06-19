@@ -211,7 +211,8 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
     subview and fires the fetch, `@logout`).
   - Dashboard subviews: `FlowsView`, `CredentialsView`, `ExecutionsView`, `DataTablesList`,
     `DataTableDetail` (controlled inline-edit: state stays in App.vue), `McpServersView`,
-    `UsersAdminView` (admin-only; self-contained: fetches/creates/deletes via `/api/users`).
+    `UsersAdminView` (admin-only; self-contained: fetches/creates/deletes via `/api/users`),
+    `VectorStoresView` (RAG collections: list + delete via `/api/vector-stores`).
   - Auth: `LoginView` (email/password → `POST /api/auth/login` → emits `logged-in`). App.vue
     gates the whole UI on `currentUser` (no session → only the login shows); the **Usuarios**
     sidebar entry + logout appear when authenticated (admin sees the users view).
