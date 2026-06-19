@@ -36,7 +36,9 @@ import {
   deleteMcpServer,
   getBinary,
   getAllWorkflowsWithGraph,
-  getUserByEmail
+  getUserByEmail,
+  assertOwnership,
+  getOwnerOf
 } from './db.js';
 import { verifyPassword } from './password.js';
 import { signToken } from './jwt.js';
@@ -132,6 +134,19 @@ function serverError(res: express.Response, err: any) {
   return res.status(500).json({ error: 'Internal server error' });
 }
 
+// --- F2c: scoping de propiedad por ruta (admin ve todo; ajeno -> 404) ---
+function reqIsAdmin(req: express.Request): boolean {
+  return (req as any).user?.role === 'admin';
+}
+/** ¿El solicitante puede ver/operar un recurso de este dueño? (admin sí; mismo dueño sí). */
+function canAccess(ownerId: string | null | undefined, req: express.Request): boolean {
+  return assertOwnership(ownerId ?? null, (req as any).user?.id ?? null, reqIsAdmin(req));
+}
+/** Filtra una lista de recursos (cada uno con `owner_id`) a los visibles por el solicitante. */
+function scopeList<T extends { owner_id?: string | null }>(rows: T[], req: express.Request): T[] {
+  return (rows || []).filter(r => canAccess(r.owner_id, req));
+}
+
 const SENSITIVE_HEADERS = new Set([
   'authorization',
   'cookie',
@@ -200,7 +215,7 @@ app.post('/api/workflows/run', async (req, res) => {
 app.get('/api/workflows', async (req, res) => {
   try {
     const list = await getWorkflows();
-    return res.json(list);
+    return res.json(scopeList(list, req));
   } catch (err: any) {
     return serverError(res, err);
   }
@@ -209,7 +224,7 @@ app.get('/api/workflows', async (req, res) => {
 app.get('/api/workflows/:id', async (req, res) => {
   try {
     const workflow = await getWorkflowById(req.params.id);
-    if (!workflow) {
+    if (!workflow || !canAccess(workflow.owner_id, req)) {
       return res.status(404).json({ error: 'Workflow not found' });
     }
     return res.json(workflow);
@@ -223,7 +238,7 @@ app.get('/api/workflows/:id', async (req, res) => {
 app.get('/api/workflows/:id/export', async (req, res) => {
   try {
     const wf = await getWorkflowById(req.params.id);
-    if (!wf) return res.status(404).json({ error: 'Workflow not found' });
+    if (!wf || !canAccess(wf.owner_id, req)) return res.status(404).json({ error: 'Workflow not found' });
     return res.json({
       libreflowWorkflow: 1,
       name: wf.name,
@@ -273,6 +288,10 @@ app.post('/api/workflows', async (req, res) => {
 
     // Check if the workflow was already active
     const existingWorkflow = await getWorkflowById(id);
+    // F2c: no se puede sobrescribir un flujo ajeno (mismo 404 que inexistente).
+    if (existingWorkflow && !canAccess(existingWorkflow.owner_id, req)) {
+      return res.status(404).json({ error: 'Workflow not found' });
+    }
     const wasActive = existingWorkflow ? !!existingWorkflow.active : false;
 
     await saveWorkflow(id, name, nodes || [], connections || [], onErrorWorkflowId, description, (req as any).user?.id);
@@ -296,6 +315,10 @@ app.post('/api/workflows', async (req, res) => {
 
 app.delete('/api/workflows/:id', async (req, res) => {
   try {
+    const wf = await getWorkflowById(req.params.id);
+    if (!wf || !canAccess(wf.owner_id, req)) {
+      return res.status(404).json({ error: 'Workflow not found' });
+    }
     await deleteWorkflow(req.params.id);
     return res.json({ success: true, message: 'Workflow deleted successfully' });
   } catch (err: any) {
@@ -320,7 +343,7 @@ app.post('/api/workflows/validate', async (req, res) => {
 app.post('/api/workflows/validate-batch', async (req, res) => {
   try {
     const { ids, contains } = req.body || {};
-    const all = await getAllWorkflowsWithGraph();
+    const all = scopeList(await getAllWorkflowsWithGraph(), req); // F2c: solo flujos del solicitante
     let selected = all;
     if (Array.isArray(ids) && ids.length) {
       const set = new Set(ids.map(String));
@@ -339,6 +362,10 @@ app.post('/api/workflows/validate-batch', async (req, res) => {
 // EXECUTION LOGS ENDPOINTS
 app.get('/api/workflows/:id/executions', async (req, res) => {
   try {
+    const wf = await getWorkflowById(req.params.id);
+    if (!wf || !canAccess(wf.owner_id, req)) {
+      return res.status(404).json({ error: 'Workflow not found' });
+    }
     const list = await getExecutions(req.params.id);
     return res.json(list);
   } catch (err: any) {
@@ -349,7 +376,7 @@ app.get('/api/workflows/:id/executions', async (req, res) => {
 app.get('/api/executions', async (req, res) => {
   try {
     const list = await getAllExecutions();
-    return res.json(list);
+    return res.json(scopeList(list, req)); // F2c: cada ejecución lleva el owner del flujo
   } catch (err: any) {
     return serverError(res, err);
   }
@@ -358,7 +385,7 @@ app.get('/api/executions', async (req, res) => {
 app.get('/api/executions/:id', async (req, res) => {
   try {
     const execution = await getExecutionById(req.params.id);
-    if (!execution) {
+    if (!execution || !canAccess(await getOwnerOf('workflows', execution.workflow_id), req)) {
       return res.status(404).json({ error: 'Execution not found' });
     }
     return res.json(execution);
@@ -372,7 +399,7 @@ app.get('/api/executions/:id', async (req, res) => {
 app.get('/api/executions/:id/llm-context', async (req, res) => {
   try {
     const execution = await getExecutionById(req.params.id);
-    if (!execution) {
+    if (!execution || !canAccess(await getOwnerOf('workflows', execution.workflow_id), req)) {
       return res.status(404).json({ error: 'Execution not found' });
     }
     let workflowName: string | undefined;
@@ -399,7 +426,7 @@ app.post('/api/workflows/:id/active', async (req, res) => {
 
     // Check if workflow exists
     const workflow = await getWorkflowById(id);
-    if (!workflow) {
+    if (!workflow || !canAccess(workflow.owner_id, req)) {
       return res.status(404).json({ error: 'Workflow not found' });
     }
 
@@ -427,6 +454,8 @@ app.post('/api/workflows/:id/active', async (req, res) => {
 // VERSIONING ENDPOINTS
 app.get('/api/workflows/:id/versions', async (req, res) => {
   try {
+    const wf = await getWorkflowById(req.params.id);
+    if (!wf || !canAccess(wf.owner_id, req)) return res.status(404).json({ error: 'Workflow not found' });
     const list = await getWorkflowVersions(req.params.id);
     return res.json(list);
   } catch (err: any) {
@@ -436,6 +465,8 @@ app.get('/api/workflows/:id/versions', async (req, res) => {
 
 app.get('/api/workflows/:id/versions/:version', async (req, res) => {
   try {
+    const wf = await getWorkflowById(req.params.id);
+    if (!wf || !canAccess(wf.owner_id, req)) return res.status(404).json({ error: 'Version not found' });
     const ver = await getWorkflowVersion(req.params.id, parseInt(req.params.version, 10));
     if (!ver) {
       return res.status(404).json({ error: 'Version not found' });
@@ -452,6 +483,9 @@ app.post('/api/workflows/:id/versions/:version/restore', async (req, res) => {
     
     // Check if the workflow is active first
     const workflow = await getWorkflowById(id);
+    if (!workflow || !canAccess(workflow.owner_id, req)) {
+      return res.status(404).json({ error: 'Workflow not found' });
+    }
     if (workflow && workflow.active) {
       // It's active. Let's stop triggers in memory before restoring, then we will restart them if it succeeds.
       triggerManager.stopTriggers(id);
@@ -478,7 +512,7 @@ app.post('/api/workflows/:id/versions/:version/restore', async (req, res) => {
 app.get('/api/credentials', async (req, res) => {
   try {
     const list = await getCredentials();
-    return res.json(list);
+    return res.json(scopeList(list, req));
   } catch (err: any) {
     return serverError(res, err);
   }
@@ -487,7 +521,7 @@ app.get('/api/credentials', async (req, res) => {
 app.get('/api/credentials/:id', async (req, res) => {
   try {
     const credential = await getCredentialById(req.params.id);
-    if (!credential) {
+    if (!credential || !canAccess((credential as any).owner_id, req)) {
       return res.status(404).json({ error: 'Credential not found' });
     }
     // Never expose decrypted secret material over the API — metadata only.
@@ -509,6 +543,11 @@ app.post('/api/credentials', async (req, res) => {
     if (!id || !name || !type || !data) {
       return res.status(400).json({ error: 'id, name, type, and data are required' });
     }
+    // F2c: no se puede sobrescribir una credencial ajena.
+    const existingCred = await getCredentialById(id);
+    if (existingCred && !canAccess((existingCred as any).owner_id, req)) {
+      return res.status(404).json({ error: 'Credential not found' });
+    }
     // OAuth2: al editar una credencial ya conectada, el formulario no reenvía los tokens
     // (la GET no los expone). Conserva accessToken/refreshToken/expiresAt para no desconectarla.
     if (type === 'oauth2') {
@@ -528,6 +567,10 @@ app.post('/api/credentials', async (req, res) => {
 
 app.delete('/api/credentials/:id', async (req, res) => {
   try {
+    const cred = await getCredentialById(req.params.id);
+    if (!cred || !canAccess((cred as any).owner_id, req)) {
+      return res.status(404).json({ error: 'Credential not found' });
+    }
     await deleteCredential(req.params.id);
     return res.json({ success: true, message: 'Credential deleted successfully' });
   } catch (err: any) {
@@ -540,6 +583,14 @@ app.get('/api/binaries/:id', async (req, res) => {
   try {
     const bin = await getBinary(req.params.id);
     if (!bin) return res.status(404).json({ error: 'Binary not found' });
+    // F2c: un binario pertenece al flujo de su ejecución; solo su dueño (o admin) lo descarga.
+    // Binarios sin execution_id (ad-hoc/legacy) no se enforzan.
+    if ((bin as any).execution_id) {
+      const exec = await getExecutionById((bin as any).execution_id);
+      if (exec && !canAccess(await getOwnerOf('workflows', exec.workflow_id), req)) {
+        return res.status(404).json({ error: 'Binary not found' });
+      }
+    }
     if (bin.mime_type) res.set('Content-Type', bin.mime_type);
     res.set('Content-Length', String(bin.size));
     const safeName = (bin.file_name || bin.id).replace(/[^\w.\-]+/g, '_');
@@ -567,7 +618,7 @@ app.get('/api/oauth/redirect-uri', (_req, res) => {
 app.post('/api/credentials/:id/oauth/authorize', async (req, res) => {
   try {
     const cred = await getCredentialById(req.params.id);
-    if (!cred || cred.type !== 'oauth2') {
+    if (!cred || cred.type !== 'oauth2' || !canAccess((cred as any).owner_id, req)) {
       return res.status(404).json({ error: 'OAuth2 credential not found' });
     }
     const url = buildAuthorizationUrl(cred, oauthRedirectUri());
@@ -581,7 +632,7 @@ app.post('/api/credentials/:id/oauth/authorize', async (req, res) => {
 app.get('/api/data-tables', async (req, res) => {
   try {
     const list = await getDataTables();
-    return res.json(list);
+    return res.json(scopeList(list, req));
   } catch (err: any) {
     return serverError(res, err);
   }
@@ -590,7 +641,7 @@ app.get('/api/data-tables', async (req, res) => {
 app.get('/api/data-tables/:id', async (req, res) => {
   try {
     const table = await getDataTableById(req.params.id);
-    if (!table) {
+    if (!table || !canAccess((table as any).owner_id, req)) {
       return res.status(404).json({ error: 'Data Table not found' });
     }
     return res.json(table);
@@ -605,6 +656,10 @@ app.post('/api/data-tables', async (req, res) => {
     if (!id || !name || !Array.isArray(columns)) {
       return res.status(400).json({ error: 'id, name, and columns (array) are required' });
     }
+    const existingTable = await getDataTableById(id);
+    if (existingTable && !canAccess((existingTable as any).owner_id, req)) {
+      return res.status(404).json({ error: 'Data Table not found' });
+    }
     await saveDataTable(id, name, columns, keyColumn || null, (req as any).user?.id);
     return res.json({ success: true, message: 'Data Table saved successfully' });
   } catch (err: any) {
@@ -614,6 +669,10 @@ app.post('/api/data-tables', async (req, res) => {
 
 app.delete('/api/data-tables/:id', async (req, res) => {
   try {
+    const t = await getDataTableById(req.params.id);
+    if (!t || !canAccess((t as any).owner_id, req)) {
+      return res.status(404).json({ error: 'Data Table not found' });
+    }
     await deleteDataTable(req.params.id);
     return res.json({ success: true, message: 'Data Table deleted successfully' });
   } catch (err: any) {
@@ -623,6 +682,8 @@ app.delete('/api/data-tables/:id', async (req, res) => {
 
 app.get('/api/data-tables/:id/rows', async (req, res) => {
   try {
+    const t0 = await getDataTableById(req.params.id);
+    if (!t0 || !canAccess((t0 as any).owner_id, req)) return res.status(404).json({ error: 'Data Table not found' });
     const limit = req.query.limit ? Number(req.query.limit) : undefined;
     const offset = req.query.offset ? Number(req.query.offset) : undefined;
     const list = await getDataTableRows(req.params.id, limit, offset);
@@ -634,6 +695,8 @@ app.get('/api/data-tables/:id/rows', async (req, res) => {
 
 app.post('/api/data-tables/:id/rows', async (req, res) => {
   try {
+    const t0 = await getDataTableById(req.params.id);
+    if (!t0 || !canAccess((t0 as any).owner_id, req)) return res.status(404).json({ error: 'Data Table not found' });
     const { id: rowId, data } = req.body;
     if (!data || typeof data !== 'object') {
       return res.status(400).json({ error: 'data (object) is required' });
@@ -648,6 +711,8 @@ app.post('/api/data-tables/:id/rows', async (req, res) => {
 
 app.put('/api/data-tables/:id/rows/:rowId', async (req, res) => {
   try {
+    const t0 = await getDataTableById(req.params.id);
+    if (!t0 || !canAccess((t0 as any).owner_id, req)) return res.status(404).json({ error: 'Data Table not found' });
     const { data } = req.body;
     if (!data || typeof data !== 'object') {
       return res.status(400).json({ error: 'data (object) is required' });
@@ -661,6 +726,8 @@ app.put('/api/data-tables/:id/rows/:rowId', async (req, res) => {
 
 app.delete('/api/data-tables/:id/rows/:rowId', async (req, res) => {
   try {
+    const t0 = await getDataTableById(req.params.id);
+    if (!t0 || !canAccess((t0 as any).owner_id, req)) return res.status(404).json({ error: 'Data Table not found' });
     await deleteDataTableRow(req.params.rowId);
     return res.json({ success: true });
   } catch (err: any) {
@@ -675,7 +742,7 @@ function generateMcpToken(): string {
 
 app.get('/api/mcp-servers', async (req, res) => {
   try {
-    return res.json(await getMcpServers());
+    return res.json(scopeList(await getMcpServers(), req));
   } catch (err: any) {
     return serverError(res, err);
   }
@@ -684,7 +751,7 @@ app.get('/api/mcp-servers', async (req, res) => {
 app.get('/api/mcp-servers/:id', async (req, res) => {
   try {
     const server = await getMcpServerById(req.params.id);
-    if (!server) return res.status(404).json({ error: 'MCP server not found' });
+    if (!server || !canAccess((server as any).owner_id, req)) return res.status(404).json({ error: 'MCP server not found' });
     return res.json(server);
   } catch (err: any) {
     return serverError(res, err);
@@ -707,6 +774,9 @@ app.post('/api/mcp-servers', async (req, res) => {
     }
 
     const existing = id ? await getMcpServerById(id) : null;
+    if (existing && !canAccess((existing as any).owner_id, req)) {
+      return res.status(404).json({ error: 'MCP server not found' });
+    }
     const serverId = existing ? existing.id : `mcps-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     // A token is always generated and kept so auth can be toggled on later without losing it.
     let token: string | null = existing ? existing.token : generateMcpToken();
@@ -721,6 +791,8 @@ app.post('/api/mcp-servers', async (req, res) => {
 
 app.delete('/api/mcp-servers/:id', async (req, res) => {
   try {
+    const s = await getMcpServerById(req.params.id);
+    if (!s || !canAccess((s as any).owner_id, req)) return res.status(404).json({ error: 'MCP server not found' });
     await deleteMcpServer(req.params.id);
     return res.json({ success: true });
   } catch (err: any) {
@@ -993,19 +1065,25 @@ if (staticDir) {
   });
 }
 
+// Export the Express app for in-process tests (supertest). Under vitest we DON'T bind the
+// port nor start background triggers — the test drives `app` directly and inits the DB itself.
+export { app };
+
 // Initialize database then start server
 let server: any;
 
-initDatabase().then(async () => {
-  // Init trigger manager to load active background crons
-  await triggerManager.init();
+if (!process.env.VITEST) {
+  initDatabase().then(async () => {
+    // Init trigger manager to load active background crons
+    await triggerManager.init();
 
-  server = app.listen(port, () => {
-    console.log(`[LibreFlow Backend] Server running on port ${port}`);
+    server = app.listen(port, () => {
+      console.log(`[LibreFlow Backend] Server running on port ${port}`);
+    });
+  }).catch(err => {
+    console.error('[LibreFlow Database] Failed to initialize SQLite database:', err);
   });
-}).catch(err => {
-  console.error('[LibreFlow Database] Failed to initialize SQLite database:', err);
-});
+}
 
 // Clean shutdown handlers
 function shutdown(signal: string) {
