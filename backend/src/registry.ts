@@ -1,6 +1,6 @@
 import { LibreFlowNodeDefinition } from './sdk.js';
 import { WorkflowSuspendError } from './engine.js';
-import { getCredentialById, getWorkflowById, getBinary, assertOwnership } from './db.js';
+import { getCredentialById, getWorkflowById, getBinary, assertOwnership, getDataTableById, getDataTableRows } from './db.js';
 import { storeBinary, isBinaryRef, fileNameFromUrl, readResponseCapped, MAX_BINARY_BYTES } from './binary.js';
 import { parseFileBuffer, serializeToFile, detectFormat, parsePdfBuffer, parseXlsxBuffer, serializeXlsxFile, FileFormat } from './fileParse.js';
 import { compareValues, filterItems, summarize, sortItems, limitItems, uniqueItems, Aggregation, mergeAnswers, ConsensusStrategy } from './collections.js';
@@ -2010,9 +2010,12 @@ const vectorStoreNode: LibreFlowNodeDefinition = {
   parameters: [
     { name: 'operation', label: 'Operación', type: 'options', default: 'search', options: [
       { label: 'Indexar (embeber y guardar)', value: 'index' },
+      { label: 'Indexar tabla de datos', value: 'indexTable' },
       { label: 'Buscar (similitud)', value: 'search' },
     ] },
     { name: 'collection', label: 'Colección', type: 'string', default: 'docs', placeholder: 'nombre de la base de conocimiento' },
+    { name: 'tableId', label: 'Tabla de datos (indexar tabla)', type: 'options', default: '' },
+    { name: 'textColumn', label: 'Columna de texto a embeber (indexar tabla)', type: 'string', default: '', placeholder: 'ej. contenido' },
     { name: 'endpoint', label: 'Endpoint de embeddings (OpenAI-compatible)', type: 'string', default: 'http://localhost:1234/v1', placeholder: 'http://localhost:1234/v1' },
     { name: 'model', label: 'Modelo de embeddings', type: 'string', default: '', placeholder: 'ej. text-embedding-3-small / nomic-embed-text' },
     { name: 'authentication', label: 'Autenticación', type: 'options', default: 'none', options: [
@@ -2047,6 +2050,22 @@ const vectorStoreNode: LibreFlowNodeDefinition = {
         try { items = JSON.parse(items || '[]'); } catch { throw new Error('Vector Store: "items" debe ser JSON válido.'); }
       }
       if (!Array.isArray(items)) throw new Error('Vector Store: "items" debe ser un array.');
+      return await indexVectors(ownerId, String(collection), items, cfg);
+    }
+    if (operation === 'indexTable') {
+      const { tableId, textColumn } = params;
+      if (!tableId) throw new Error('Vector Store: falta la tabla de datos.');
+      if (!textColumn) throw new Error('Vector Store: falta la columna de texto a embeber.');
+      const table = await getDataTableById(String(tableId));
+      if (!table) throw new Error(`Vector Store: tabla "${tableId}" no encontrada.`);
+      if (ownerId && !assertOwnership((table as any).owner_id, ownerId, execMeta?.isAdmin ?? false)) {
+        throw new Error('Vector Store: sin permiso sobre esa tabla de datos.');
+      }
+      const rows = await getDataTableRows(String(tableId));
+      const items = rows
+        .filter(r => (r.data?.[textColumn] ?? '') !== '')
+        .map(r => ({ id: r.id, text: String(r.data[textColumn]), metadata: { ...r.data, _rowId: r.id } }));
+      if (!items.length) throw new Error(`Vector Store: la tabla no tiene filas con texto en "${textColumn}".`);
       return await indexVectors(ownerId, String(collection), items, cfg);
     }
     if (operation === 'search') {
