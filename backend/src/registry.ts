@@ -271,6 +271,52 @@ const setNode: LibreFlowNodeDefinition = {
   }
 };
 
+/** Arma el cuerpo de la petición HTTP (binario desde el store, o JSON/texto) y fija Content-Type. */
+async function buildHttpRequestBody(
+  fetchOptions: RequestInit,
+  headerObj: Record<string, string>,
+  method: string,
+  body: any,
+  bodyType: string
+): Promise<void> {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase()) || !body) return;
+  if (bodyType === 'binary') {
+    // Sube un fichero: `body` debe resolver a una referencia de binario; cargamos los bytes.
+    if (!isBinaryRef(body)) {
+      throw new Error('HTTP Request: bodyType=binary requiere que el cuerpo sea una referencia de binario (ej. {{ $node.X.output.body }}).');
+    }
+    const bin = await getBinary(body._lfBinary);
+    if (!bin) throw new Error(`HTTP Request: binario "${body._lfBinary}" no encontrado.`);
+    fetchOptions.body = new Uint8Array(bin.data);
+    if (!headerObj['Content-Type'] && (body.mimeType || bin.mime_type)) {
+      headerObj['Content-Type'] = body.mimeType || bin.mime_type!;
+    }
+    return;
+  }
+  fetchOptions.body = typeof body === 'object' ? JSON.stringify(body) : String(body);
+  if (!headerObj['Content-Type']) headerObj['Content-Type'] = 'application/json';
+}
+
+/** Decodifica la respuesta HTTP según responseFormat (binary→store, text, json, o auto). */
+async function decodeHttpResponse(
+  buf: Buffer,
+  responseFormat: string,
+  requestUrl: string,
+  resHeaders: Record<string, string>,
+  executionId: string | null
+): Promise<any> {
+  if (responseFormat === 'binary') {
+    const fileName = fileNameFromUrl(requestUrl);
+    const mimeType = resHeaders['content-type']?.split(';')[0]?.trim();
+    return storeBinary(buf, { executionId, fileName, mimeType });
+  }
+  const text = buf.toString('utf-8');
+  if (responseFormat === 'text') return text;
+  if (responseFormat === 'json') return JSON.parse(text);
+  // auto: intenta JSON, cae a texto.
+  try { return JSON.parse(text); } catch { return text; }
+}
+
 const httpRequestNode: LibreFlowNodeDefinition = {
   type: 'httpRequest',
   displayName: 'Petición HTTP',
@@ -392,26 +438,7 @@ const httpRequestNode: LibreFlowNodeDefinition = {
       headers: headerObj,
     };
 
-    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method.toUpperCase()) && body) {
-      if (bodyType === 'binary') {
-        // Sube un fichero: `body` debe resolver a una referencia de binario; cargamos los
-        // bytes del store y los enviamos como cuerpo crudo.
-        if (!isBinaryRef(body)) {
-          throw new Error('HTTP Request: bodyType=binary requiere que el cuerpo sea una referencia de binario (ej. {{ $node.X.output.body }}).');
-        }
-        const bin = await getBinary(body._lfBinary);
-        if (!bin) throw new Error(`HTTP Request: binario "${body._lfBinary}" no encontrado.`);
-        fetchOptions.body = new Uint8Array(bin.data);
-        if (!headerObj['Content-Type'] && (body.mimeType || bin.mime_type)) {
-          headerObj['Content-Type'] = body.mimeType || bin.mime_type!;
-        }
-      } else {
-        fetchOptions.body = typeof body === 'object' ? JSON.stringify(body) : String(body);
-        if (!headerObj['Content-Type']) {
-          headerObj['Content-Type'] = 'application/json';
-        }
-      }
-    }
+    await buildHttpRequestBody(fetchOptions, headerObj, method, body, bodyType);
 
     // safeFetch valida la URL y CADA salto de redirect (SSRF), con redirects acotados.
     const response = await safeFetch(requestUrl, fetchOptions);
@@ -423,24 +450,7 @@ const httpRequestNode: LibreFlowNodeDefinition = {
 
     // Lee el cuerpo con tope de memoria (evita OOM si el endpoint envía/miente sobre algo enorme).
     const buf = await readResponseCapped(response, MAX_BINARY_BYTES);
-
-    let responseBody: any;
-    if (responseFormat === 'binary') {
-      // Descarga: guarda los bytes en el store y devuelve una referencia ligera.
-      const fileName = fileNameFromUrl(requestUrl);
-      const mimeType = resHeaders['content-type']?.split(';')[0]?.trim();
-      responseBody = await storeBinary(buf, { executionId, fileName, mimeType });
-    } else {
-      const text = buf.toString('utf-8');
-      if (responseFormat === 'text') {
-        responseBody = text;
-      } else if (responseFormat === 'json') {
-        responseBody = JSON.parse(text);
-      } else {
-        // auto: intenta JSON, cae a texto.
-        try { responseBody = JSON.parse(text); } catch { responseBody = text; }
-      }
-    }
+    const responseBody = await decodeHttpResponse(buf, responseFormat, requestUrl, resHeaders, executionId);
 
     return {
       status: response.status,
@@ -933,15 +943,7 @@ const mcpToolCallNode: LibreFlowNodeDefinition = {
     const argsObj: Record<string, any> = {};
     if (Array.isArray(argsList)) {
       for (const item of argsList) {
-        if (item && item.key && !isUnsafeKey(item.key)) {
-          let val = item.value;
-          if (typeof val === 'string') {
-            if (val === 'true') val = true;
-            else if (val === 'false') val = false;
-            else if (!isNaN(Number(val)) && val.trim() !== '') val = Number(val);
-          }
-          argsObj[item.key] = val;
-        }
+        if (item && item.key && !isUnsafeKey(item.key)) argsObj[item.key] = coerceScalar(item.value);
       }
     } else if (argsList && typeof argsList === 'object') {
       Object.assign(argsObj, argsList);
@@ -958,6 +960,100 @@ const mcpToolCallNode: LibreFlowNodeDefinition = {
 
     return await executeMcpToolCall(requestUrl, toolName, argsObj, headers);
   }
+};
+
+/** Coacciona un valor string a bool/number cuando aplica (deja el resto intacto). */
+function coerceScalar(val: any): any {
+  if (typeof val !== 'string') return val;
+  if (val === 'true') return true;
+  if (val === 'false') return false;
+  if (!isNaN(Number(val)) && val.trim() !== '') return Number(val);
+  return val;
+}
+
+/** Coacciona pares keyvalue a un objeto tipado (string→bool/number). Compartido por las ops de escritura. */
+function coerceFields(items: any[]): Record<string, any> {
+  const obj: Record<string, any> = {};
+  for (const item of items || []) {
+    if (item && item.key) obj[item.key] = coerceScalar(item.value);
+  }
+  return obj;
+}
+
+type DataTableDb = typeof import('./db.js');
+
+/** Operaciones del nodo dataTable (dispatch table). Cada handler recibe los params y el módulo db. */
+const DATA_TABLE_OPS: Record<string, (p: any, db: DataTableDb) => Promise<any>> = {
+  upsert: (p, db) => db.upsertDataTableRow(p.tableId, coerceFields(p.fields || [])),
+
+  increment: (p, db) => {
+    if (!p.key) throw new Error('Data Table Node error: key is required for increment operation');
+    const amt = Number(p.amount ?? '1');
+    return db.incrementDataTableRow(p.tableId, String(p.key), p.field || 'count', isNaN(amt) ? 1 : amt);
+  },
+
+  getOrDefault: (p, db) => {
+    if (!p.key) throw new Error('Data Table Node error: key is required for getOrDefault operation');
+    return db.getOrCreateDataTableRow(p.tableId, String(p.key), coerceFields(p.fields || []));
+  },
+
+  batch: async (p, db) => {
+    let ops: any = p.batchOps;
+    if (typeof ops === 'string') {
+      try { ops = JSON.parse(ops || '[]'); } catch { throw new Error('Data Table Node error: batchOps must be valid JSON'); }
+    }
+    if (!Array.isArray(ops)) throw new Error('Data Table Node error: batchOps must be an array');
+    const applied = await db.batchDataTableRows(p.tableId, ops);
+    return { success: true, applied: applied.length, results: applied };
+  },
+
+  query: (p, db) => {
+    let qf: any = p.queryFilters;
+    if (typeof qf === 'string') {
+      try { qf = JSON.parse(qf || '[]'); } catch { throw new Error('Data Table Node error: queryFilters must be valid JSON'); }
+    }
+    if (!Array.isArray(qf)) qf = [];
+    const sort = p.sortColumn
+      ? { column: p.sortColumn, dir: (p.sortDir === 'desc' ? 'desc' : 'asc') as 'asc' | 'desc' }
+      : undefined;
+    const limit = p.limit ? Number(p.limit) : undefined;
+    return db.queryDataTableRows(p.tableId, qf, { sort, limit });
+  },
+
+  append: async (p, db) => {
+    const dataObj = coerceFields(p.fields || []);
+    const generatedRowId = `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    await db.addDataTableRow(p.tableId, generatedRowId, dataObj);
+    return { id: generatedRowId, tableId: p.tableId, data: dataObj };
+  },
+
+  search: async (p, db) => {
+    const allRows = await db.getDataTableRows(p.tableId);
+    // Los filtros de search NO se coaccionan: comparación por igualdad de string (como antes).
+    const filterObj: Record<string, any> = {};
+    for (const item of p.filters || []) {
+      if (item && item.key) filterObj[item.key] = item.value;
+    }
+    return allRows.filter((row: any) => {
+      for (const [k, v] of Object.entries(filterObj)) {
+        if (String(row.data[k]) !== String(v)) return false;
+      }
+      return true;
+    });
+  },
+
+  update: async (p, db) => {
+    if (!p.rowId) throw new Error('Data Table Node error: rowId is required for update operation');
+    const dataObj = coerceFields(p.fields || []);
+    await db.updateDataTableRow(p.rowId, dataObj);
+    return { success: true, id: p.rowId, updatedFields: dataObj };
+  },
+
+  delete: async (p, db) => {
+    if (!p.rowId) throw new Error('Data Table Node error: rowId is required for delete operation');
+    await db.deleteDataTableRow(p.rowId);
+    return { success: true, id: p.rowId };
+  },
 };
 
 const dataTableNode: LibreFlowNodeDefinition = {
@@ -1075,143 +1171,16 @@ const dataTableNode: LibreFlowNodeDefinition = {
     }
   ],
   execute: async (params) => {
-    const { operation = 'append', tableId, rowId, fields = [], filters = [], key, field = 'count', amount = '1' } = params;
+    const { operation = 'append', tableId } = params;
     if (!tableId) {
       throw new Error('Data Table Node error: tableId is required');
     }
-
-    const {
-      getDataTableRows, addDataTableRow, updateDataTableRow, deleteDataTableRow,
-      upsertDataTableRow, incrementDataTableRow, getOrCreateDataTableRow, queryDataTableRows,
-      batchDataTableRows
-    } = await import('./db.js');
-
-    // Coerces keyvalue pairs into a typed object (string→bool/number), shared by write ops.
-    const buildDataObject = (items: any[]): Record<string, any> => {
-      const obj: Record<string, any> = {};
-      for (const item of items || []) {
-        if (item && item.key) {
-          let val = item.value;
-          if (typeof val === 'string') {
-            if (val === 'true') val = true;
-            else if (val === 'false') val = false;
-            else if (!isNaN(Number(val)) && val.trim() !== '') val = Number(val);
-          }
-          obj[item.key] = val;
-        }
-      }
-      return obj;
-    };
-
-    if (operation === 'upsert') {
-      return await upsertDataTableRow(tableId, buildDataObject(fields));
+    const handler = DATA_TABLE_OPS[operation];
+    if (!handler) {
+      throw new Error(`Data Table Node error: Unsupported operation: ${operation}`);
     }
-
-    if (operation === 'increment') {
-      if (!key) throw new Error('Data Table Node error: key is required for increment operation');
-      const amt = Number(amount);
-      return await incrementDataTableRow(tableId, String(key), field, isNaN(amt) ? 1 : amt);
-    }
-
-    if (operation === 'getOrDefault') {
-      if (!key) throw new Error('Data Table Node error: key is required for getOrDefault operation');
-      return await getOrCreateDataTableRow(tableId, String(key), buildDataObject(fields));
-    }
-
-    if (operation === 'batch') {
-      let ops: any = params.batchOps;
-      if (typeof ops === 'string') {
-        try { ops = JSON.parse(ops || '[]'); } catch { throw new Error('Data Table Node error: batchOps must be valid JSON'); }
-      }
-      if (!Array.isArray(ops)) throw new Error('Data Table Node error: batchOps must be an array');
-      const applied = await batchDataTableRows(tableId, ops);
-      return { success: true, applied: applied.length, results: applied };
-    }
-
-    if (operation === 'query') {
-      let qf: any = params.queryFilters;
-      if (typeof qf === 'string') {
-        try { qf = JSON.parse(qf || '[]'); } catch { throw new Error('Data Table Node error: queryFilters must be valid JSON'); }
-      }
-      if (!Array.isArray(qf)) qf = [];
-      const sort = params.sortColumn
-        ? { column: params.sortColumn, dir: (params.sortDir === 'desc' ? 'desc' : 'asc') as 'asc' | 'desc' }
-        : undefined;
-      const limit = params.limit ? Number(params.limit) : undefined;
-      return await queryDataTableRows(tableId, qf, { sort, limit });
-    }
-
-    if (operation === 'append') {
-      const dataObj: Record<string, any> = {};
-      for (const item of fields) {
-        if (item && item.key) {
-          let val = item.value;
-          if (typeof val === 'string') {
-            if (val === 'true') val = true;
-            else if (val === 'false') val = false;
-            else if (!isNaN(Number(val)) && val.trim() !== '') val = Number(val);
-          }
-          dataObj[item.key] = val;
-        }
-      }
-
-      const generatedRowId = `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-      await addDataTableRow(tableId, generatedRowId, dataObj);
-      return { id: generatedRowId, tableId, data: dataObj };
-    }
-
-    if (operation === 'search') {
-      const allRows = await getDataTableRows(tableId);
-      const filterObj: Record<string, any> = {};
-      for (const item of filters) {
-        if (item && item.key) {
-          filterObj[item.key] = item.value;
-        }
-      }
-
-      const filtered = allRows.filter(row => {
-        for (const [key, value] of Object.entries(filterObj)) {
-          if (String(row.data[key]) !== String(value)) {
-            return false;
-          }
-        }
-        return true;
-      });
-
-      return filtered;
-    }
-
-    if (operation === 'update') {
-      if (!rowId) {
-        throw new Error('Data Table Node error: rowId is required for update operation');
-      }
-
-      const dataObj: Record<string, any> = {};
-      for (const item of fields) {
-        if (item && item.key) {
-          let val = item.value;
-          if (typeof val === 'string') {
-            if (val === 'true') val = true;
-            else if (val === 'false') val = false;
-            else if (!isNaN(Number(val)) && val.trim() !== '') val = Number(val);
-          }
-          dataObj[item.key] = val;
-        }
-      }
-
-      await updateDataTableRow(rowId, dataObj);
-      return { success: true, id: rowId, updatedFields: dataObj };
-    }
-
-    if (operation === 'delete') {
-      if (!rowId) {
-        throw new Error('Data Table Node error: rowId is required for delete operation');
-      }
-      await deleteDataTableRow(rowId);
-      return { success: true, id: rowId };
-    }
-
-    throw new Error(`Data Table Node error: Unsupported operation: ${operation}`);
+    const db = await import('./db.js');
+    return handler(params, db);
   }
 };
 
@@ -1362,6 +1331,165 @@ const convertToFileNode: LibreFlowNodeDefinition = {
   }
 };
 
+/** Convierte tools MCP al formato function-calling de OpenAI. */
+function toOpenAITools(tools: any[]): any[] {
+  return tools.map((t: any) => ({
+    type: 'function',
+    function: { name: t.name, description: t.description, parameters: t.inputSchema || { type: 'object', properties: {} } },
+  }));
+}
+
+/** Auth del endpoint LLM desde el vault (header + query). */
+async function resolveLlmAuth(endpoint: string, authentication: string, credentialId: string | undefined, execMeta: any) {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  let llmEndpoint = endpoint;
+  if (authentication === 'genericCredential' && credentialId) {
+    const auth = await resolveCredentialAuth(credentialId, execMeta?.ownerId, execMeta?.isAdmin);
+    Object.assign(headers, auth.headers);
+    llmEndpoint = appendQueryParams(endpoint, auth.query);
+  }
+  return { headers, llmEndpoint };
+}
+
+interface AgentToolset {
+  openaiTools: any[];
+  callTool: ((name: string, args: any) => Promise<string>) | null;
+  mcpSession: { close: () => void } | null;
+  skillsBlock: string;
+  promptMessages: { role: string; content: string }[];
+}
+
+/** Toolset de un MCP EXTERNO (URL): sesión SDK persistente + skills/prompt opcionales. */
+async function buildExternalToolset(params: any, execMeta: any): Promise<AgentToolset> {
+  const { mcpServerUrl, mcpAuthentication = 'none', mcpCredentialId, loadSkills = false, mcpPromptName = '', mcpPromptArgs = '' } = params;
+  const mcpAuth = (mcpAuthentication === 'genericCredential' && mcpCredentialId)
+    ? await resolveCredentialAuth(mcpCredentialId, execMeta?.ownerId, execMeta?.isAdmin)
+    : { headers: {}, query: {} };
+  const url = appendQueryParams(mcpServerUrl, mcpAuth.query);
+  const { openMcpClientSession, loadSkillsFromSession, loadPromptMessages } = await import('./mcp.js');
+  const session: any = await openMcpClientSession(url, mcpAuth.headers);
+  const callTool = async (name: string, args: any) => {
+    const result: any = await session.callTool(name, args);
+    return result?.content?.[0]?.text ?? JSON.stringify(result ?? {});
+  };
+  const skillsBlock = loadSkills ? await loadSkillsFromSession(session) : '';
+  let promptMessages: { role: string; content: string }[] = [];
+  if (mcpPromptName) {
+    let promptArgs: Record<string, any> = {};
+    if (mcpPromptArgs) {
+      try { promptArgs = JSON.parse(String(mcpPromptArgs)); }
+      catch { throw new Error('AI Agent error: mcpPromptArgs no es JSON válido'); }
+    }
+    promptMessages = await loadPromptMessages(session, String(mcpPromptName), promptArgs);
+  }
+  return { openaiTools: toOpenAITools(await session.listTools()), callTool, mcpSession: session, skillsBlock, promptMessages };
+}
+
+/** Toolset de un MCP PROPIO (id): in-process vía dispatchMcpRpc. F3: hereda el dueño del flujo. */
+async function buildInProcessToolset(params: any, execMeta: any): Promise<AgentToolset> {
+  const { dispatchMcpRpc } = await import('./mcp.js');
+  const { getMcpServerById } = await import('./db.js');
+  const server = await getMcpServerById(params.mcpServerId);
+  if (!server) throw new Error(`AI Agent error: MCP server "${params.mcpServerId}" not found`);
+  const scope = {
+    workflowIds: server.workflow_ids,
+    exposeSystemTools: server.expose_system_tools,
+    ownerId: execMeta?.ownerId,
+    isAdmin: execMeta?.isAdmin,
+  };
+  const listed = await dispatchMcpRpc({ jsonrpc: '2.0', id: 0, method: 'tools/list' }, scope);
+  const callTool = async (name: string, args: any) => {
+    const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 0, method: 'tools/call', params: { name, arguments: args } }, scope);
+    if (r.payload?.error) return 'error: ' + r.payload.error.message;
+    return r.payload?.result?.content?.[0]?.text ?? JSON.stringify(r.payload?.result ?? {});
+  };
+  return { openaiTools: toOpenAITools(listed.payload?.result?.tools || []), callTool, mcpSession: null, skillsBlock: '', promptMessages: [] };
+}
+
+/** Resuelve el toolset del agente según el modo (URL externo / id propio / ninguno). */
+async function buildAgentToolset(params: any, execMeta: any): Promise<AgentToolset> {
+  if (params.mcpServerUrl) return buildExternalToolset(params, execMeta);
+  if (params.mcpServerId) return buildInProcessToolset(params, execMeta);
+  return { openaiTools: [], callTool: null, mcpSession: null, skillsBlock: '', promptMessages: [] };
+}
+
+/** Una llamada al LLM (chat/completions) con timeout duro vía AbortController. */
+async function callLlm(chatUrl: string, headers: Record<string, string>, body: any, llmTimeout: number): Promise<any> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), llmTimeout);
+  try {
+    const res = await fetch(chatUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
+    if (!res.ok) {
+      const t = await res.text();
+      throw new Error(`AI Agent LLM error: HTTP ${res.status} ${t.slice(0, 200)}`);
+    }
+    return await res.json();
+  } catch (err: any) {
+    if (err?.name === 'AbortError') throw new Error(`AI Agent error: LLM call timed out after ${llmTimeout}ms`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Ejecuta los tool_calls de un turno: invoca cada tool y empuja su resultado a la conversación. */
+async function runAgentToolCalls(toolCalls: any[], messages: any[], trace: any[], callTool: AgentToolset['callTool']): Promise<void> {
+  for (const tc of toolCalls) {
+    let args: any = {};
+    try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* leave empty */ }
+    let resultText = '';
+    try {
+      resultText = callTool ? await callTool(tc.function.name, args) : 'error: no toolset configured';
+    } catch (e: any) {
+      resultText = 'error: ' + e.message;
+    }
+    trace.push({ tool: tc.function.name, arguments: args, result: resultText.slice(0, 2000) });
+    messages.push({ role: 'tool', tool_call_id: tc.id, content: String(resultText).slice(0, 4000) });
+  }
+}
+
+interface AgentRunCfg {
+  chatUrl: string;
+  headers: Record<string, string>;
+  model: any;
+  systemPrompt: any;
+  userMessage: any;
+  toolset: AgentToolset;
+  maxIter: number;
+  temp: number;
+  llmTimeout: number;
+}
+
+/** Una ejecución del agente: conversación propia con el loop de tool-calling (hasta maxIter). */
+async function runAgentConversation(cfg: AgentRunCfg) {
+  const { toolset } = cfg;
+  const messages: any[] = [];
+  if (cfg.systemPrompt) messages.push({ role: 'system', content: String(cfg.systemPrompt) });
+  if (toolset.skillsBlock) messages.push({ role: 'system', content: toolset.skillsBlock });
+  for (const pm of toolset.promptMessages) messages.push({ role: pm.role, content: pm.content });
+  messages.push({ role: 'user', content: String(cfg.userMessage) });
+
+  const trace: any[] = [];
+  let answer = '';
+  let hitCap = true;
+
+  for (let i = 0; i < cfg.maxIter; i++) {
+    const body: any = { model: cfg.model, messages, temperature: isNaN(cfg.temp) ? 0 : cfg.temp, stream: false };
+    if (toolset.openaiTools.length) { body.tools = toolset.openaiTools; body.tool_choice = 'auto'; }
+    const data = await callLlm(cfg.chatUrl, cfg.headers, body, cfg.llmTimeout);
+    const msg = data.choices?.[0]?.message;
+    if (!msg) throw new Error('AI Agent error: no message in LLM response');
+    if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      answer = msg.content || '';
+      hitCap = false;
+      break;
+    }
+    messages.push(msg);
+    await runAgentToolCalls(msg.tool_calls, messages, trace, toolset.callTool);
+  }
+  return { answer, iterations: trace.length, hitMaxIterations: hitCap && trace.length > 0, toolCalls: trace };
+}
+
 const aiAgentNode: LibreFlowNodeDefinition = {
   type: 'aiAgent',
   displayName: 'Agente IA',
@@ -1511,172 +1639,24 @@ const aiAgentNode: LibreFlowNodeDefinition = {
   ],
   execute: async (params, _context, _inputs, execMeta) => {
     const {
-      endpoint = 'http://localhost:1234/v1',
-      model,
-      authentication = 'none',
-      credentialId,
-      systemPrompt,
-      userMessage,
-      mcpServerId,
-      mcpServerUrl,
-      mcpAuthentication = 'none',
-      mcpCredentialId,
-      maxIterations = '5',
-      temperature = '0',
-      timeoutMs = '120000',
-      runs = '1',
-      consensus = 'majority',
-      loadSkills = false,
-      mcpPromptName = '',
-      mcpPromptArgs = ''
+      endpoint = 'http://localhost:1234/v1', model, authentication = 'none', credentialId,
+      systemPrompt, userMessage, maxIterations = '5', temperature = '0', timeoutMs = '120000',
+      runs = '1', consensus = 'majority'
     } = params;
 
     if (!model) throw new Error('AI Agent error: model is required');
     if (!userMessage) throw new Error('AI Agent error: userMessage is required');
 
-    // SSRF guard on the LLM endpoint (private IPs blocked in production, allowed in dev).
+    // SSRF guard en el endpoint LLM (IPs privadas bloqueadas en prod).
     await assertSafeUrl(endpoint);
-
-    // LLM auth from the encrypted credentials vault (shared helper).
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    let llmEndpoint = endpoint;
-    if (authentication === 'genericCredential' && credentialId) {
-      const auth = await resolveCredentialAuth(credentialId, execMeta?.ownerId, execMeta?.isAdmin);
-      Object.assign(headers, auth.headers);
-      llmEndpoint = appendQueryParams(endpoint, auth.query);
-    }
-
-    const toOpenAI = (tools: any[]) => tools.map((t: any) => ({
-      type: 'function',
-      function: { name: t.name, description: t.description, parameters: t.inputSchema || { type: 'object', properties: {} } }
-    }));
-
-    // Toolset resolution. Two modes:
-    //  - External MCP server (URL): via the SDK client, optionally authenticated.
-    //  - Own named MCP server (id): IN-PROCESS via dispatchMcpRpc (no HTTP, no auth).
-    // `callTool(name, args)` abstracts the dispatch for the loop below.
-    let openaiTools: any[] = [];
-    let callTool: ((name: string, args: any) => Promise<string>) | null = null;
-    let mcpSession: { close: () => void } | null = null;
-    // Skills (instrucciones de confianza leídas de recursos MCP) inyectadas en el contexto.
-    let skillsBlock = '';
-    // Mensajes-semilla traídos de un prompt MCP parametrizable (se comparten entre runs).
-    let promptMessages: { role: string; content: string }[] = [];
-
-    if (mcpServerUrl) {
-      // External MCP: auth from the vault, ONE persistent client session reused across the
-      // loop (avoids a connect+initialize handshake per tool call).
-      const mcpAuth = (mcpAuthentication === 'genericCredential' && mcpCredentialId)
-        ? await resolveCredentialAuth(mcpCredentialId, execMeta?.ownerId, execMeta?.isAdmin)
-        : { headers: {}, query: {} };
-      const url = appendQueryParams(mcpServerUrl, mcpAuth.query);
-      const { openMcpClientSession, loadSkillsFromSession, loadPromptMessages } = await import('./mcp.js');
-      const session: any = await openMcpClientSession(url, mcpAuth.headers);
-      mcpSession = session;
-      openaiTools = toOpenAI(await session.listTools());
-      callTool = async (name, args) => {
-        const result: any = await session.callTool(name, args);
-        return result?.content?.[0]?.text ?? JSON.stringify(result ?? {});
-      };
-
-      // Carga de skills desde los RECURSOS del servidor MCP (una vez; se comparten entre runs).
-      // Solo aplica a servidores externos que expongan recursos.
-      if (loadSkills) skillsBlock = await loadSkillsFromSession(session);
-
-      // Prompt MCP parametrizable (plantilla gobernada) como semilla de la conversación.
-      if (mcpPromptName) {
-        let promptArgs: Record<string, any> = {};
-        if (mcpPromptArgs) {
-          try { promptArgs = JSON.parse(String(mcpPromptArgs)); }
-          catch { throw new Error('AI Agent error: mcpPromptArgs no es JSON válido'); }
-        }
-        promptMessages = await loadPromptMessages(session, String(mcpPromptName), promptArgs);
-      }
-    } else if (mcpServerId) {
-      const { dispatchMcpRpc } = await import('./mcp.js');
-      const { getMcpServerById } = await import('./db.js');
-      const server = await getMcpServerById(mcpServerId);
-      if (!server) throw new Error(`AI Agent error: MCP server "${mcpServerId}" not found`);
-      // F3: el toolset propio del agente hereda el dueño del flujo (cruza con F2b) — solo puede
-      // invocar flujos del mismo dueño. Sin dueño (single-tenant) → sin scoping.
-      const scope = {
-        workflowIds: server.workflow_ids,
-        exposeSystemTools: server.expose_system_tools,
-        ownerId: execMeta?.ownerId,
-        isAdmin: execMeta?.isAdmin,
-      };
-      const listed = await dispatchMcpRpc({ jsonrpc: '2.0', id: 0, method: 'tools/list' }, scope);
-      openaiTools = toOpenAI(listed.payload?.result?.tools || []);
-      callTool = async (name, args) => {
-        const r = await dispatchMcpRpc({ jsonrpc: '2.0', id: 0, method: 'tools/call', params: { name, arguments: args } }, scope);
-        if (r.payload?.error) return 'error: ' + r.payload.error.message;
-        return r.payload?.result?.content?.[0]?.text ?? JSON.stringify(r.payload?.result ?? {});
-      };
-    }
+    const { headers, llmEndpoint } = await resolveLlmAuth(endpoint, authentication, credentialId, execMeta);
+    const toolset = await buildAgentToolset(params, execMeta);
 
     const maxIter = Math.max(1, Math.min(20, Number(maxIterations) || 5));
     const temp = Number(temperature);
     const llmTimeout = Math.max(5000, Number(timeoutMs) || 120000);
     const chatUrl = `${llmEndpoint.replace(/\/$/, '')}/chat/completions`;
-
-    // Una ejecución del agente (conversación propia; toolset compartido entre runs).
-    const runOnce = async () => {
-      const messages: any[] = [];
-      if (systemPrompt) messages.push({ role: 'system', content: String(systemPrompt) });
-      if (skillsBlock) messages.push({ role: 'system', content: skillsBlock });
-      for (const pm of promptMessages) messages.push({ role: pm.role, content: pm.content });
-      messages.push({ role: 'user', content: String(userMessage) });
-      const trace: any[] = [];
-      let answer = '';
-      let hitCap = true;
-
-      for (let i = 0; i < maxIter; i++) {
-        const body: any = { model, messages, temperature: isNaN(temp) ? 0 : temp, stream: false };
-        if (openaiTools.length) { body.tools = openaiTools; body.tool_choice = 'auto'; }
-
-        // Abort a hung LLM call instead of blocking the workflow. The timer stays armed
-        // through the body read (a server can send headers then stall the stream).
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), llmTimeout);
-        let data: any;
-        try {
-          const res = await fetch(chatUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: ctrl.signal });
-          if (!res.ok) {
-            const t = await res.text();
-            throw new Error(`AI Agent LLM error: HTTP ${res.status} ${t.slice(0, 200)}`);
-          }
-          data = await res.json();
-        } catch (err: any) {
-          if (err?.name === 'AbortError') throw new Error(`AI Agent error: LLM call timed out after ${llmTimeout}ms`);
-          throw err;
-        } finally {
-          clearTimeout(timer);
-        }
-        const msg = data.choices?.[0]?.message;
-        if (!msg) throw new Error('AI Agent error: no message in LLM response');
-
-        if (!msg.tool_calls || msg.tool_calls.length === 0) {
-          answer = msg.content || '';
-          hitCap = false;
-          break;
-        }
-
-        messages.push(msg);
-        for (const tc of msg.tool_calls) {
-          let args: any = {};
-          try { args = JSON.parse(tc.function.arguments || '{}'); } catch { /* leave empty */ }
-          let resultText = '';
-          try {
-            resultText = callTool ? await callTool(tc.function.name, args) : 'error: no toolset configured';
-          } catch (e: any) {
-            resultText = 'error: ' + e.message;
-          }
-          trace.push({ tool: tc.function.name, arguments: args, result: resultText.slice(0, 2000) });
-          messages.push({ role: 'tool', tool_call_id: tc.id, content: String(resultText).slice(0, 4000) });
-        }
-      }
-      return { answer, iterations: trace.length, hitMaxIterations: hitCap && trace.length > 0, toolCalls: trace };
-    };
+    const runOnce = () => runAgentConversation({ chatUrl, headers, model, systemPrompt, userMessage, toolset, maxIter, temp, llmTimeout });
 
     try {
       const n = Math.max(1, Math.min(10, Number(runs) || 1));
@@ -1687,12 +1667,12 @@ const aiAgentNode: LibreFlowNodeDefinition = {
       const merged = mergeAnswers(results.map(r => r.answer), consensus as ConsensusStrategy);
       return {
         answer: merged.answer,
-        agreement: merged.agreement,   // 0-1: cuánto coincidieron las N ejecuciones
+        agreement: merged.agreement,
         consensus: merged.strategy,
         runs: results.map(r => ({ answer: r.answer, iterations: r.iterations, toolCalls: r.toolCalls }))
       };
     } finally {
-      mcpSession?.close();
+      toolset.mcpSession?.close();
     }
   }
 };
