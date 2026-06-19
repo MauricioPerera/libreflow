@@ -246,7 +246,7 @@ app.post('/api/workflows/import', async (req, res) => {
     }
     const id = `wf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const name = typeof wf.name === 'string' && wf.name.trim() ? wf.name : 'Flujo importado';
-    await saveWorkflow(id, name, wf.nodes, wf.connections || [], undefined, wf.description ?? null);
+    await saveWorkflow(id, name, wf.nodes, wf.connections || [], undefined, wf.description ?? null, (req as any).user?.id);
     const validation = validateWorkflow({ nodes: wf.nodes, connections: wf.connections || [] });
     return res.json({ id, name, validation });
   } catch (err: any) {
@@ -271,7 +271,7 @@ app.post('/api/workflows', async (req, res) => {
     const existingWorkflow = await getWorkflowById(id);
     const wasActive = existingWorkflow ? !!existingWorkflow.active : false;
 
-    await saveWorkflow(id, name, nodes || [], connections || [], onErrorWorkflowId, description);
+    await saveWorkflow(id, name, nodes || [], connections || [], onErrorWorkflowId, description, (req as any).user?.id);
 
     if (wasActive) {
       const updatedWorkflow = await getWorkflowById(id);
@@ -515,7 +515,7 @@ app.post('/api/credentials', async (req, res) => {
         }
       }
     }
-    await saveCredential(id, name, type, data);
+    await saveCredential(id, name, type, data, (req as any).user?.id);
     return res.json({ success: true, message: 'Credential saved successfully' });
   } catch (err: any) {
     return serverError(res, err);
@@ -601,7 +601,7 @@ app.post('/api/data-tables', async (req, res) => {
     if (!id || !name || !Array.isArray(columns)) {
       return res.status(400).json({ error: 'id, name, and columns (array) are required' });
     }
-    await saveDataTable(id, name, columns, keyColumn || null);
+    await saveDataTable(id, name, columns, keyColumn || null, (req as any).user?.id);
     return res.json({ success: true, message: 'Data Table saved successfully' });
   } catch (err: any) {
     return serverError(res, err);
@@ -708,7 +708,7 @@ app.post('/api/mcp-servers', async (req, res) => {
     let token: string | null = existing ? existing.token : generateMcpToken();
     if (regenerateToken || !token) token = generateMcpToken();
 
-    await saveMcpServer(serverId, name, workflowIds, token, !!ra, !!exposeSystemTools);
+    await saveMcpServer(serverId, name, workflowIds, token, !!ra, !!exposeSystemTools, (req as any).user?.id);
     return res.json(await getMcpServerById(serverId));
   } catch (err: any) {
     return serverError(res, err);
