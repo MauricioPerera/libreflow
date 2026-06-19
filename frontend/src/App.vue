@@ -200,37 +200,13 @@
 
     <!-- Editor Workspace -->
     <main class="libreflow-workspace">
-      <!-- Floating Node Selector (Left Panel) -->
-      <aside v-if="!isPreviewMode" :class="['node-selector', 'editor-floating-left', { collapsed: isNodeSelectorCollapsed }]">
-        <div class="node-selector-header">
-          <h4 class="node-selector-title">Agregar Nodos</h4>
-          <button @click="isNodeSelectorCollapsed = true" class="sidebar-close-btn" title="Ocultar panel">✕</button>
-        </div>
-        <button 
-          v-for="nodeDef in nodeTypesList" 
-          :key="nodeDef.type" 
-          @click="addNode(nodeDef.type)" 
-          class="node-drag-item"
-        >
-          <span 
-            class="node-icon" 
-            :style="{ background: nodeDef.ui?.gradient || 'var(--color-primary)' }"
-          >
-            {{ nodeDef.icon }}
-          </span>
-          {{ nodeDef.displayName }}
-        </button>
-      </aside>
-
-      <!-- Floating Toggle Button to re-open Node Selector (Only when collapsed) -->
-      <button 
-        v-if="isNodeSelectorCollapsed && !isPreviewMode" 
-        @click="isNodeSelectorCollapsed = false" 
-        class="floating-node-selector-toggle"
-        title="Mostrar panel de nodos"
-      >
-        ＋ Agregar Nodo
-      </button>
+      <!-- Paleta de nodos (panel flotante izquierdo) + toggle de reapertura -->
+      <NodePalette
+        :node-types="nodeTypesList"
+        v-model:collapsed="isNodeSelectorCollapsed"
+        :preview-mode="isPreviewMode"
+        @add="addNode"
+      />
 
       <!-- Vue Flow Canvas -->
       <section class="canvas-container">
@@ -567,6 +543,7 @@ import BatchValidateModal from './components/BatchValidateModal.vue';
 import AiContextModal from './components/AiContextModal.vue';
 import CredentialModal from './components/CredentialModal.vue';
 import McpServersView from './components/McpServersView.vue';
+import NodePalette from './components/NodePalette.vue';
 import LoginView from './components/LoginView.vue';
 import UsersAdminView from './components/UsersAdminView.vue';
 import { getToken, setToken, clearToken, authEvents } from './auth';
