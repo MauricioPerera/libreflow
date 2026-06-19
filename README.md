@@ -14,6 +14,11 @@ with an Express + SQLite backend and a Vue 3 + Vue Flow frontend.
   `dataTable`, loops, sub-workflows, HTTP, JS code, plus control/data primitives
   (`switch`, `filter`, `aggregate`), file content (`extractFromFile`, `convertToFile`) and a
   custom HTTP `respond`.
+- **Multi-user auth & isolation** — email/password login issuing a session **JWT** (bearer on
+  every `/api` call), an **admin** role that sees everything and regular users **isolated** by
+  `owner_id`: each sees only their own flows/credentials/data-tables/executions, and a flow can
+  only use its owner's credentials (enforced in execution, routes, and MCP). Admin user
+  management from the UI (`/api/users`). Single-tenant installs (no owner) are unaffected.
 - **MCP server, both ways** — expose the whole platform globally, or a curated **named
   server** (group of workflows as tools on its own token-protected URL). Standards-compliant
   **Streamable HTTP** transport via the official `@modelcontextprotocol/sdk`. Beyond tools, the
@@ -26,7 +31,7 @@ with an Express + SQLite backend and a Vue 3 + Vue Flow frontend.
   (`GET/POST /form/:workflowId`) that runs the flow on submit.
 - **File content** — `extractFromFile` parses **CSV/XLSX/JSON/text** into structured rows and
   extracts **text from PDF**; `convertToFile` generates CSV/XLSX/JSON/text back into a
-  downloadable binary (SheetJS + pdf-parse).
+  downloadable binary (XLSX via **exceljs**, PDF text via pdf-parse).
 - **Collection primitives** — `switch` (N-way routing by rules), `filter`, and `aggregate`
   (group-by + count/sum/avg/min/max, sort, limit, dedupe) — local, deterministic, no LLM.
 - **Data-table state engine** — unique-key idempotency, atomic `upsert` / `increment` /
@@ -70,15 +75,19 @@ npm install -w backend
 npm install -w frontend
 ```
 
-Configuration is **optional in development** — the app runs with safe defaults and zero
-config. For production, copy the env template and set the required secrets:
-
 ```bash
 cp .env.example .env        # then edit; see the file for every variable
 ```
 
+**Log in (multi-user):** the UI is gated by a login screen, so you need at least one user.
+Set `LF_ADMIN_EMAIL` + `LF_ADMIN_PASSWORD` to **bootstrap the first admin** on startup (works
+in dev too); then log in with those credentials and create more users from the **Usuarios**
+admin view. Without them no account exists and you can't get past the login screen. Existing
+single-tenant data (no owner) is swept to the bootstrap admin on first run.
+
 Required in production (`NODE_ENV=production`): `ENCRYPTION_KEY`, `LF_API_KEY`,
-`LF_WEBHOOK_SECRET`. All others are optional with sensible defaults — see
+`LF_WEBHOOK_SECRET`, and `LF_JWT_SECRET` (signs session JWTs — the app refuses to issue/verify
+tokens without it in prod). All others are optional with sensible defaults — see
 [.env.example](.env.example).
 
 ## Run (development)
@@ -128,8 +137,12 @@ screenshots the UI with headless Chrome.
 
 ## Key API endpoints
 
-All under `/api` (require `x-api-key` when `LF_API_KEY` is set):
+All under `/api` require auth: a session **JWT** (`Authorization: Bearer`, from login) or the
+global `LF_API_KEY` (admin break-glass). Resources are scoped by `owner_id` (admin sees all).
 
+- `POST /api/auth/login` — email/password → `{ token, user }`; `GET /api/auth/me` — current user;
+  `POST /api/auth/password` — change your own password
+- `GET|POST|DELETE /api/users[/:id]` — **admin-only** user management (+ `/:id/password` reset)
 - `GET  /api/node-types` — registered node definitions
 - `POST /api/workflows/run` — run an ad-hoc workflow `{ workflow, payload }`
 - `POST /api/workflows/validate` — structural coherence check `{ nodes, connections }`
@@ -177,6 +190,11 @@ Workflow shape: `nodes[] = {id,type,name,parameters}`, `connections[] =
   popup → `/oauth/callback`), all with automatic token fetch/refresh and an encrypted token
   cache. Interactive flow needs `LF_PUBLIC_URL` set and the redirect URI registered at the
   provider.
+- **Multi-user isolation** is enforced in depth: the executor threads the run's owner into
+  credential resolution (a flow can't use another user's credentials), every `/api` resource
+  route filters/authorizes by `owner_id` (foreign → 404), and the MCP (global, named, and the
+  aiAgent's own toolset) only exposes the owner's flows/resources. Passwords are scrypt-hashed;
+  session JWTs are HS256-signed with `LF_JWT_SECRET`.
 - Named MCP servers use a per-server bearer token (constant-time compared); a **public**
   (no-token) server may not expose **any** `libreflow_*` system tools (not just the destructive
   ones — the server rejects creating a public server with system tools enabled).

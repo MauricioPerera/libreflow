@@ -189,10 +189,11 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
 
 ### Frontend (`frontend/src/`)
 - **App.vue** — the shell/orchestrator: VueFlow node-canvas editor + dashboard, owning the
-  reactive state, fetchers and CRUD; the dashboard subviews and modals are now **extracted
-  components** (App.vue went 2623→~1800 LOC). Backend via `/api` (Vite proxy in dev;
-  same-origin in the single-container prod build). `apiGetJson` (used by all read fetchers)
-  checks `res.ok`; `applyExecutionResults` styles node/edge status. Unsaved-changes via
+  reactive state, fetchers and CRUD; the dashboard subviews, modals, editor panels are now
+  **extracted components** and the list+fetch state lives in **composables** (App.vue went
+  2623→~1645 LOC). Backend via `/api` (Vite proxy in dev; same-origin in the single-container
+  prod build). `apiGetJson` (now in `api.ts`, used by all read fetchers + composables) checks
+  `res.ok`; `applyExecutionResults` styles node/edge status. Unsaved-changes via
   `isDirty` — set on connect/add/param-edit **and** node move (`@node-drag-stop`) / delete
   (`@nodes/edges-change` `remove`), guarded by `applyingCanvas` so programmatic loads don't
   trip it. On save, the coherence `validation` paints as a floating banner (click an issue →
