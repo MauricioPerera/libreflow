@@ -315,6 +315,8 @@ import DashboardSidebar from './components/DashboardSidebar.vue';
 import LoginView from './components/LoginView.vue';
 import UsersAdminView from './components/UsersAdminView.vue';
 import { getToken, setToken, clearToken, authEvents } from './auth';
+import { apiGetJson } from './api';
+import { useCredentials } from './composables/useCredentials';
 import { statusLabel, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
 // Sesión (multi-usuario). null = no autenticado → se muestra el login.
@@ -383,8 +385,8 @@ const panelUpdateKey = ref(0);
 const showExpressionModal = ref(false);
 const expressionTarget = ref<any | null>(null);
 
-// Credentials states
-const credentialsList = ref<any[]>([]);
+// Credentials states (lista + fetch en el composable useCredentials)
+const { credentialsList, fetchCredentials } = useCredentials();
 const showCredentialModal = ref(false);
 // Id de la credencial a editar (null = crear). El formulario y toda la lógica OAuth viven
 // ahora en CredentialModal.vue.
@@ -822,17 +824,6 @@ const exitEditor = async () => {
 
 // PERSISTENCE LOGIC (CRUD)
 
-// Central GET helper: verifies res.ok so a 4xx/5xx is never parsed as valid data.
-const apiGetJson = async <T,>(url: string): Promise<T> => {
-  const res = await fetch(url);
-  if (!res.ok) {
-    let detail = '';
-    try { detail = (await res.json())?.error || ''; } catch { /* ignore */ }
-    throw new Error(`HTTP ${res.status} ${url}${detail ? ': ' + detail : ''}`);
-  }
-  return res.json();
-};
-
 const fetchSavedWorkflows = async () => {
   try {
     savedWorkflowsList.value = await apiGetJson('/api/workflows');
@@ -924,14 +915,6 @@ const importWorkflow = () => {
 };
 
 // CREDENTIALS CRUD LOGIC
-const fetchCredentials = async () => {
-  try {
-    credentialsList.value = await apiGetJson('/api/credentials');
-  } catch (err) {
-    console.error('Error fetching credentials:', err);
-  }
-};
-
 const deleteCredentialFromDb = async (id: string) => {
   if (!confirm('¿Estás seguro de que deseas eliminar esta credencial de forma permanente?')) return;
   try {
