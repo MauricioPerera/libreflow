@@ -20,6 +20,7 @@ const items = [
   { view: 'credentials', label: '🔑 Credenciales' },
   { view: 'datatables', label: '📊 Tablas de Datos' },
   { view: 'mcpservers', label: '🔌 Servidores MCP' },
+  { view: 'vectorstores', label: '🧠 Vector Stores' },
 ];
 </script>
 

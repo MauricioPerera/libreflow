@@ -5,17 +5,17 @@ import DashboardSidebar from './DashboardSidebar.vue';
 const base = { activeSubView: 'workflows', isAdmin: false, userLabel: 'a@b.c', userEmail: 'a@b.c' };
 
 describe('DashboardSidebar', () => {
-  it('muestra las 5 subvistas base (sin Usuarios para no-admin) y marca la activa', () => {
+  it('muestra las 6 subvistas base (sin Usuarios para no-admin) y marca la activa', () => {
     const w = mount(DashboardSidebar, { props: { ...base, activeSubView: 'credentials' } });
     const btns = w.findAll('.menu-btn');
-    expect(btns).toHaveLength(5);
+    expect(btns).toHaveLength(6);
     const active = btns.find((b) => b.classes().includes('active'))!;
     expect(active.text()).toContain('Credenciales');
   });
 
   it('añade la entrada Usuarios cuando isAdmin', () => {
     const w = mount(DashboardSidebar, { props: { ...base, isAdmin: true } });
-    expect(w.findAll('.menu-btn')).toHaveLength(6);
+    expect(w.findAll('.menu-btn')).toHaveLength(7);
     expect(w.text()).toContain('Usuarios');
   });
 

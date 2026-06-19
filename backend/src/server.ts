@@ -39,6 +39,8 @@ import {
   getUserByEmail,
   assertOwnership,
   getOwnerOf,
+  listVectorCollections,
+  deleteVectorCollection,
   listUsers,
   createUser,
   deleteUser,
@@ -718,6 +720,25 @@ app.post('/api/credentials/:id/oauth/authorize', async (req, res) => {
     return res.json({ url });
   } catch (err: any) {
     return res.status(400).json({ error: err.message });
+  }
+});
+
+// VECTOR STORES API (RAG): colecciones de vectores del dueño. Owner-scoped por construcción
+// (las helpers filtran por owner_id; un usuario solo direcciona sus propias colecciones).
+app.get('/api/vector-stores', async (req, res) => {
+  try {
+    return res.json(await listVectorCollections((req as any).user?.id ?? null));
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+app.delete('/api/vector-stores/:collection', async (req, res) => {
+  try {
+    await deleteVectorCollection((req as any).user?.id ?? null, req.params.collection);
+    return res.json({ success: true });
+  } catch (err: any) {
+    return serverError(res, err);
   }
 });
 
