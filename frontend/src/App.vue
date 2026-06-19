@@ -321,6 +321,7 @@ import { useExecutions } from './composables/useExecutions';
 import { useNodeTypes } from './composables/useNodeTypes';
 import { useMcpServers } from './composables/useMcpServers';
 import { useDataTables } from './composables/useDataTables';
+import { useWorkflowVersions } from './composables/useWorkflowVersions';
 import { statusLabel, setNestedValue, parseJsonColumns, coerceRowByColumns } from './utils';
 
 // Sesión (multi-usuario). null = no autenticado → se muestra el login.
@@ -370,11 +371,8 @@ const isRightSidebarCollapsed = ref(false);
 const isActiveWorkflow = ref(false);
 const onErrorWorkflowId = ref('');
 
-// Versioning states
-const isPreviewMode = ref(false);
-const previewedVersionNumber = ref<number | null>(null);
-const tempWorkflowState = ref<any | null>(null);
-const workflowVersionsList = ref<any[]>([]);
+// Versioning states (estado + fetch en el composable; preview/restore se quedan abajo)
+const { workflowVersionsList, isPreviewMode, previewedVersionNumber, tempWorkflowState, fetchWorkflowVersions } = useWorkflowVersions();
 
 // Database / Persistence States
 const savedWorkflowsList = ref<any[]>([]);
@@ -1536,15 +1534,6 @@ const loadSampleWorkflow = () => {
 
   initializeNodeCounters();
   activeWorkflowName.value = 'Ejemplo de Integración n8n';
-};
-
-const fetchWorkflowVersions = async (workflowId: string | null) => {
-  if (!workflowId) return;
-  try {
-    workflowVersionsList.value = await apiGetJson(`/api/workflows/${workflowId}/versions`);
-  } catch (err) {
-    console.error('Error fetching workflow versions:', err);
-  }
 };
 
 const previewWorkflowVersion = async (versionNum: number) => {
