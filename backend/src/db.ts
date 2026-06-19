@@ -74,6 +74,21 @@ export async function initDatabase() {
   `);
   await db.exec('CREATE INDEX IF NOT EXISTS idx_binaries_execution ON binaries(execution_id)');
 
+  // Vector store (RAG): persiste las colecciones de js-vector-store como "ficheros" (<col>.bin /
+  // <col>.json) dentro del propio SQLite de LibreFlow (backup de un-solo-fichero intacto).
+  // owner_id '' = single-tenant/sin dueño; cada fila es un fichero de una colección de un dueño.
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS vector_store (
+      owner_id TEXT NOT NULL DEFAULT '',
+      collection TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      data BLOB NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (owner_id, filename)
+    );
+  `);
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_vector_store_col ON vector_store(owner_id, collection)');
+
   // Create credentials table
   await db.exec(`
     CREATE TABLE IF NOT EXISTS credentials (
@@ -445,6 +460,42 @@ export async function saveBinary(
 export async function getBinary(id: string): Promise<{ id: string; file_name: string | null; mime_type: string | null; size: number; data: Buffer } | null> {
   const row = await db.get('SELECT id, file_name, mime_type, size, data FROM binaries WHERE id = ?', [id]);
   return row || null;
+}
+
+// --- VECTOR STORE (RAG) ---
+// Las colecciones de js-vector-store se guardan como "ficheros" (<col>.bin/<col>.json) por dueño.
+
+/** Lee los ficheros pedidos de un dueño (para hidratar el MemoryStorageAdapter). */
+export async function getVectorFiles(ownerId: string | null, filenames: string[]): Promise<{ filename: string; data: Buffer }[]> {
+  if (!filenames.length) return [];
+  const ph = filenames.map(() => '?').join(',');
+  return db.all(
+    `SELECT filename, data FROM vector_store WHERE owner_id = ? AND filename IN (${ph})`,
+    [ownerId || '', ...filenames]
+  );
+}
+
+/** Inserta/actualiza un fichero de una colección (al persistir tras index). */
+export async function upsertVectorFile(ownerId: string | null, collection: string, filename: string, data: Buffer): Promise<void> {
+  await db.run(
+    `INSERT INTO vector_store (owner_id, collection, filename, data, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(owner_id, filename) DO UPDATE SET data = excluded.data, collection = excluded.collection, updated_at = CURRENT_TIMESTAMP`,
+    [ownerId || '', collection, filename, data]
+  );
+}
+
+/** Borra una colección entera de un dueño. */
+export async function deleteVectorCollection(ownerId: string | null, collection: string): Promise<void> {
+  await db.run('DELETE FROM vector_store WHERE owner_id = ? AND collection = ?', [ownerId || '', collection]);
+}
+
+/** Lista las colecciones de un dueño (nombre + nº de ficheros + última actualización). */
+export async function listVectorCollections(ownerId: string | null): Promise<{ collection: string; files: number; updated_at: string }[]> {
+  return db.all(
+    `SELECT collection, COUNT(*) as files, MAX(updated_at) as updated_at
+     FROM vector_store WHERE owner_id = ? GROUP BY collection ORDER BY collection ASC`,
+    [ownerId || '']
+  );
 }
 
 export async function getExecutions(workflowId: string) {

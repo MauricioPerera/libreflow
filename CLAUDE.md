@@ -44,7 +44,7 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   keys are blocked in path traversal.
 - **registry.ts** — node definitions (trigger, set, httpRequest, jsCode, if, log, merge,
   executeWorkflow, loop, mcpToolCall, dataTable, **extractFromFile**, **convertToFile**,
-  **switch**, **filter**, **aggregate**, **aiAgent**, **respond**, wait).
+  **switch**, **filter**, **aggregate**, **aiAgent**, **respond**, wait, **vectorStore**).
   `extractFromFile`/`convertToFile` parse and generate file CONTENT (CSV/XLSX/JSON/text) —
   bridging the binary store to structured data (logic in `fileParse.ts`). `switch` (N-way
   routing by rules), `filter` and `aggregate` (summarize/sort/limit/unique) are local
@@ -134,6 +134,13 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
 - **collections.ts** — pure local-collection primitives (no DB): `compareValues`, `filterItems`,
   `summarize` (group by + count/sum/avg/min/max), `sortItems`, `limitItems`, `uniqueItems`,
   `getPath` (dotted paths). Backs the switch/filter/aggregate nodes.
+- **vectorStore.ts** — RAG engine behind the `vectorStore` node. Uses **`js-vector-store`** (npm,
+  zero-dep) whose adapter is **sync**, so it operates a `MemoryStorageAdapter` **hydrated from /
+  persisted to** the `vector_store` SQLite table per collection (`<col>.bin`/`<col>.json` blobs) —
+  vectors live in LibreFlow's own DB (single-file backup intact), **owner-scoped** (F2). `embedTexts`
+  hits an OpenAI-compatible `POST <endpoint>/embeddings` via `safeFetch` (auth headers resolved by
+  the node). `indexVectors` / `searchVectors` (top-K, metric). Compose `vectorStore(search)→aiAgent`
+  for RAG. db helpers: `getVectorFiles` / `upsertVectorFile` / `deleteVectorCollection` / `listVectorCollections`.
 - **fileParse.ts** — pure parse/serialize of file CONTENT. CSV via own parser/serializer
   (`parseCsv`/`toCsv`, no dependency, RFC-4180 quoting); XLSX via **`exceljs`** (maintained —
   replaced SheetJS `xlsx`, which had a high-severity prototype-pollution + ReDoS advisory with

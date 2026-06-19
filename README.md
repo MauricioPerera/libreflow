@@ -10,10 +10,14 @@ with an Express + SQLite backend and a Vue 3 + Vue Flow frontend.
 
 ## Highlights
 
-- **19 node types** incl. `aiAgent` (LLM tool-calling loop), `mcpToolCall` (MCP client),
-  `dataTable`, loops, sub-workflows, HTTP, JS code, plus control/data primitives
-  (`switch`, `filter`, `aggregate`), file content (`extractFromFile`, `convertToFile`) and a
-  custom HTTP `respond`.
+- **20 node types** incl. `aiAgent` (LLM tool-calling loop), `mcpToolCall` (MCP client),
+  `dataTable`, `vectorStore` (embeddings + similarity search for **RAG**), loops, sub-workflows,
+  HTTP, JS code, plus control/data primitives (`switch`, `filter`, `aggregate`), file content
+  (`extractFromFile`, `convertToFile`) and a custom HTTP `respond`.
+- **RAG / vector search** — the `vectorStore` node embeds text (any OpenAI-compatible endpoint:
+  LM Studio / Ollama / OpenAI) and does similarity search over collections that live **inside
+  LibreFlow's own SQLite** (engine: zero-dep `js-vector-store`; single-file backup intact;
+  owner-scoped). Compose `vectorStore (search) → aiAgent` for retrieval-augmented generation.
 - **Multi-user auth & isolation** — email/password login issuing a session **JWT** (bearer on
   every `/api` call), an **admin** role that sees everything and regular users **isolated** by
   `owner_id`: each sees only their own flows/credentials/data-tables/executions, and a flow can
