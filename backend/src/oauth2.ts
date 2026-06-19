@@ -52,15 +52,11 @@ export async function getOAuth2AccessToken(cred: any): Promise<string> {
   return p;
 }
 
-async function fetchToken(cred: any): Promise<string> {
-  const d = cred.data || {};
-  // Grant de RENOVACIÓN (distinto del de adquisición inicial): client_credentials se renueva
-  // igual; refresh_token y authorization_code se renuevan ambos vía refresh_token.
+/** Arma el body y los headers de la petición de token (grant de renovación + auth del cliente). */
+function buildTokenRequest(d: any): { body: URLSearchParams; headers: Record<string, string> } {
+  // Grant de RENOVACIÓN: client_credentials se renueva igual; refresh_token y authorization_code
+  // se renuevan ambos vía refresh_token.
   const renewGrant = d.grantType === 'client_credentials' ? 'client_credentials' : 'refresh_token';
-
-  const tokenUrl = String(d.tokenUrl || '').trim();
-  if (!tokenUrl) throw new Error('La credencial OAuth2 no tiene tokenUrl.');
-  // safeFetch (abajo) valida el tokenUrl y cada salto de redirect.
 
   const body = new URLSearchParams();
   body.set('grant_type', renewGrant);
@@ -80,45 +76,55 @@ async function fetchToken(cred: any): Promise<string> {
   };
   const clientId = String(d.clientId || '');
   const clientSecret = String(d.clientSecret || '');
-  // Autenticación del cliente: por defecto HTTP Basic (recomendado por RFC 6749);
-  // opcionalmente en el cuerpo si el servidor lo exige.
+  // Auth del cliente: por defecto HTTP Basic (RFC 6749); opcionalmente en el cuerpo.
   if (d.clientAuth === 'body') {
     if (clientId) body.set('client_id', clientId);
     if (clientSecret) body.set('client_secret', clientSecret);
   } else if (clientId) {
     headers['Authorization'] = 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
   }
+  return { body, headers };
+}
 
+/** Llama al token endpoint y valida la respuesta; devuelve el JSON con un access_token válido. */
+async function requestToken(tokenUrl: string, body: URLSearchParams, headers: Record<string, string>): Promise<any> {
+  // safeFetch valida el tokenUrl y cada salto de redirect.
   let res: Response;
   try {
     res = await safeFetch(tokenUrl, { method: 'POST', headers, body: body.toString() });
   } catch (err: any) {
     throw new Error(`Error de red pidiendo el token OAuth2: ${err?.message || String(err)}`);
   }
-
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`La petición de token OAuth2 falló (${res.status}): ${text.slice(0, 200)}`);
   }
-
   let json: any;
   try {
     json = JSON.parse(text);
   } catch {
     throw new Error('La respuesta del token OAuth2 no es JSON.');
   }
-
-  const accessToken = json.access_token;
-  if (!accessToken || typeof accessToken !== 'string') {
+  if (!json.access_token || typeof json.access_token !== 'string') {
     throw new Error('La respuesta del token OAuth2 no contiene access_token.');
   }
+  return json;
+}
+
+async function fetchToken(cred: any): Promise<string> {
+  const d = cred.data || {};
+  const tokenUrl = String(d.tokenUrl || '').trim();
+  if (!tokenUrl) throw new Error('La credencial OAuth2 no tiene tokenUrl.');
+
+  const { body, headers } = buildTokenRequest(d);
+  const json = await requestToken(tokenUrl, body, headers);
+
+  const accessToken = json.access_token as string;
   const expiresIn = Number(json.expires_in) > 0 ? Number(json.expires_in) : DEFAULT_TTL_S;
   const expiresAt = Date.now() + expiresIn * 1000;
-
   memCache.set(cred.id, { accessToken, expiresAt });
 
-  // Persiste la caché (y el refresh token rotado) en la credencial cifrada. Best-effort:
-  // si falla, el token igualmente sirve para esta ejecución.
+  // Persiste la caché (y el refresh token rotado) en la credencial cifrada. Best-effort.
   try {
     const newData = { ...d, accessToken, expiresAt };
     if (json.refresh_token) newData.refreshToken = json.refresh_token;

@@ -721,74 +721,93 @@ export interface BatchOp {
  * nodo" (no hay transacciones entre nodos en el motor stateless). Los eventos reactivos se
  * emiten solo tras un COMMIT correcto.
  */
+type BatchRowEvent = { id: string; type: 'insert' | 'update'; data: any };
+type BatchOpOutcome = { event: BatchRowEvent | null; result: { op: string; id?: string } };
+const newBatchRowId = () => `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+
+async function batchAppendOp(tableId: string, keyColumn: string | null, o: BatchOp): Promise<BatchOpOutcome> {
+  const data = o.data || {};
+  const rowId = newBatchRowId();
+  await db.run(
+    'INSERT INTO data_table_rows (id, table_id, row_key, data) VALUES (?, ?, ?, ?)',
+    [rowId, tableId, computeRowKey(keyColumn, data), JSON.stringify(data)]
+  );
+  return { event: { id: rowId, type: 'insert', data }, result: { op: 'append', id: rowId } };
+}
+
+async function batchUpdateOp(o: BatchOp): Promise<BatchOpOutcome> {
+  if (!o.rowId) throw new Error('batch: la operación "update" requiere rowId');
+  await db.run(
+    'UPDATE data_table_rows SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+    [JSON.stringify(o.data || {}), o.rowId]
+  );
+  return { event: { id: o.rowId, type: 'update', data: o.data || {} }, result: { op: 'update', id: o.rowId } };
+}
+
+async function batchDeleteOp(o: BatchOp): Promise<BatchOpOutcome> {
+  if (!o.rowId) throw new Error('batch: la operación "delete" requiere rowId');
+  await db.run('DELETE FROM data_table_rows WHERE id = ?', [o.rowId]);
+  return { event: null, result: { op: 'delete', id: o.rowId } };
+}
+
+async function batchUpsertOp(tableId: string, keyColumn: string | null, o: BatchOp): Promise<BatchOpOutcome> {
+  if (!keyColumn) throw new Error('batch: "upsert" requiere que la tabla tenga columna clave');
+  const data = o.data || {};
+  const rowKey = computeRowKey(keyColumn, data);
+  if (rowKey === null) throw new Error(`batch: fila sin la columna clave "${keyColumn}"`);
+  const existed = await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  await db.run(
+    `INSERT INTO data_table_rows (id, table_id, row_key, data) VALUES (?, ?, ?, ?)
+     ON CONFLICT(table_id, row_key) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP`,
+    [newBatchRowId(), tableId, rowKey, JSON.stringify(data)]
+  );
+  const row = await db.get('SELECT id, data FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  return { event: { id: row.id, type: existed ? 'update' : 'insert', data: JSON.parse(row.data) }, result: { op: 'upsert', id: row.id } };
+}
+
+async function batchIncrementOp(tableId: string, keyColumn: string | null, o: BatchOp): Promise<BatchOpOutcome> {
+  if (!keyColumn) throw new Error('batch: "increment" requiere que la tabla tenga columna clave');
+  if (o.key === undefined || o.key === null || o.key === '') throw new Error('batch: "increment" requiere key');
+  const field = o.field || 'count';
+  if (/[.[\]$]/.test(field)) throw new Error(`batch: el campo de increment debe ser un nombre de primer nivel (got "${field}")`);
+  const amount = Number.isFinite(Number(o.amount)) ? Number(o.amount) : 1;
+  const rowKey = String(o.key);
+  const existed = await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  await db.run(
+    `INSERT INTO data_table_rows (id, table_id, row_key, data)
+     VALUES (?, ?, ?, json_object(?, ?, ?, ?))
+     ON CONFLICT(table_id, row_key) DO UPDATE
+     SET data = json_set(data, '$.' || ?, COALESCE(json_extract(data, '$.' || ?), 0) + ?),
+         updated_at = CURRENT_TIMESTAMP`,
+    [newBatchRowId(), tableId, rowKey, keyColumn, o.key, field, amount, field, field, amount]
+  );
+  const row = await db.get('SELECT id, data FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
+  return { event: { id: row.id, type: existed ? 'update' : 'insert', data: JSON.parse(row.data) }, result: { op: 'increment', id: row.id } };
+}
+
+/** Aplica UNA op del batch (dentro de la transacción). Lanza en op no soportada. */
+async function applyBatchOp(tableId: string, keyColumn: string | null, o: BatchOp): Promise<BatchOpOutcome> {
+  switch (o?.op) {
+    case 'append': return batchAppendOp(tableId, keyColumn, o);
+    case 'update': return batchUpdateOp(o);
+    case 'delete': return batchDeleteOp(o);
+    case 'upsert': return batchUpsertOp(tableId, keyColumn, o);
+    case 'increment': return batchIncrementOp(tableId, keyColumn, o);
+    default: throw new Error(`batch: operación no soportada "${o?.op}"`);
+  }
+}
+
 export async function batchDataTableRows(tableId: string, ops: BatchOp[]) {
   const keyColumn = await getTableKeyColumn(tableId);
-  const events: { id: string; type: 'insert' | 'update'; data: any }[] = [];
+  const events: BatchRowEvent[] = [];
   const results: { op: string; id?: string }[] = [];
-
-  const newId = () => `row-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
   await db.run('BEGIN');
   try {
     for (const o of ops || []) {
-      const op = o?.op;
-      if (op === 'append') {
-        const data = o.data || {};
-        const rowId = newId();
-        await db.run(
-          'INSERT INTO data_table_rows (id, table_id, row_key, data) VALUES (?, ?, ?, ?)',
-          [rowId, tableId, computeRowKey(keyColumn, data), JSON.stringify(data)]
-        );
-        events.push({ id: rowId, type: 'insert', data });
-        results.push({ op, id: rowId });
-      } else if (op === 'update') {
-        if (!o.rowId) throw new Error('batch: la operación "update" requiere rowId');
-        await db.run(
-          'UPDATE data_table_rows SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-          [JSON.stringify(o.data || {}), o.rowId]
-        );
-        events.push({ id: o.rowId, type: 'update', data: o.data || {} });
-        results.push({ op, id: o.rowId });
-      } else if (op === 'delete') {
-        if (!o.rowId) throw new Error('batch: la operación "delete" requiere rowId');
-        await db.run('DELETE FROM data_table_rows WHERE id = ?', [o.rowId]);
-        results.push({ op, id: o.rowId });
-      } else if (op === 'upsert') {
-        if (!keyColumn) throw new Error('batch: "upsert" requiere que la tabla tenga columna clave');
-        const data = o.data || {};
-        const rowKey = computeRowKey(keyColumn, data);
-        if (rowKey === null) throw new Error(`batch: fila sin la columna clave "${keyColumn}"`);
-        const existed = await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
-        await db.run(
-          `INSERT INTO data_table_rows (id, table_id, row_key, data) VALUES (?, ?, ?, ?)
-           ON CONFLICT(table_id, row_key) DO UPDATE SET data = excluded.data, updated_at = CURRENT_TIMESTAMP`,
-          [newId(), tableId, rowKey, JSON.stringify(data)]
-        );
-        const row = await db.get('SELECT id, data FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
-        events.push({ id: row.id, type: existed ? 'update' : 'insert', data: JSON.parse(row.data) });
-        results.push({ op, id: row.id });
-      } else if (op === 'increment') {
-        if (!keyColumn) throw new Error('batch: "increment" requiere que la tabla tenga columna clave');
-        if (o.key === undefined || o.key === null || o.key === '') throw new Error('batch: "increment" requiere key');
-        const field = o.field || 'count';
-        if (/[.[\]$]/.test(field)) throw new Error(`batch: el campo de increment debe ser un nombre de primer nivel (got "${field}")`);
-        const amount = Number.isFinite(Number(o.amount)) ? Number(o.amount) : 1;
-        const rowKey = String(o.key);
-        const existed = await db.get('SELECT id FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
-        await db.run(
-          `INSERT INTO data_table_rows (id, table_id, row_key, data)
-           VALUES (?, ?, ?, json_object(?, ?, ?, ?))
-           ON CONFLICT(table_id, row_key) DO UPDATE
-           SET data = json_set(data, '$.' || ?, COALESCE(json_extract(data, '$.' || ?), 0) + ?),
-               updated_at = CURRENT_TIMESTAMP`,
-          [newId(), tableId, rowKey, keyColumn, o.key, field, amount, field, field, amount]
-        );
-        const row = await db.get('SELECT id, data FROM data_table_rows WHERE table_id = ? AND row_key = ?', [tableId, rowKey]);
-        events.push({ id: row.id, type: existed ? 'update' : 'insert', data: JSON.parse(row.data) });
-        results.push({ op, id: row.id });
-      } else {
-        throw new Error(`batch: operación no soportada "${op}"`);
-      }
+      const { event, result } = await applyBatchOp(tableId, keyColumn, o);
+      if (event) events.push(event);
+      results.push(result);
     }
     await db.run('COMMIT');
   } catch (err: any) {
@@ -799,6 +818,7 @@ export async function batchDataTableRows(tableId: string, ops: BatchOp[]) {
     throw err;
   }
 
+  // Eventos SOLO tras commit (la suscripción no ve cambios a medio aplicar).
   for (const e of events) emitRowEvent(tableId, e.id, e.type, e.data);
   return results;
 }
@@ -905,32 +925,41 @@ export interface QueryOptions { sort?: { column: string; dir?: 'asc' | 'desc' };
  * sort and limit, pushing the work into SQLite (json_extract) instead of loading all
  * rows and filtering in JS. Column names are parameterized (injection-safe).
  */
+// Equality/membership compare as TEXT so string fields that look numeric (e.g. a zip "01234")
+// and real numbers both match; ordering operators compare numerically.
+const queryTextVal = (v: any) => (v === true || v === 'true') ? '1' : (v === false || v === 'false') ? '0' : String(v);
+
+/** Cláusula SQL (+params) de UN filtro de query, o null si se omite (sin columna / `in` vacío). */
+function buildFilterClause(f: QueryFilter): { clause: string; params: any[] } | null {
+  if (!f || !f.column) return null;
+  const op = String(f.op || 'eq');
+  if (op === 'contains') {
+    return { clause: ` AND CAST(json_extract(data, '$.' || ?) AS TEXT) LIKE ?`, params: [f.column, `%${f.value}%`] };
+  }
+  if (op === 'in') {
+    const vals = (Array.isArray(f.value) ? f.value : String(f.value ?? '').split(',').map(s => s.trim()))
+      .filter((v: any) => String(v) !== '');
+    if (vals.length === 0) return null;
+    return {
+      clause: ` AND CAST(json_extract(data, '$.' || ?) AS TEXT) IN (${vals.map(() => '?').join(',')})`,
+      params: [f.column, ...vals.map(queryTextVal)],
+    };
+  }
+  if (op === 'eq' || op === 'ne') {
+    return { clause: ` AND CAST(json_extract(data, '$.' || ?) AS TEXT) ${QUERY_OPS[op]} ?`, params: [f.column, queryTextVal(f.value)] };
+  }
+  return { clause: ` AND json_extract(data, '$.' || ?) ${QUERY_OPS[op] || '='} ?`, params: [f.column, coerceQueryValue(f.value)] };
+}
+
 export async function queryDataTableRows(tableId: string, filters: QueryFilter[] = [], options: QueryOptions = {}) {
   let sql = 'SELECT * FROM data_table_rows WHERE table_id = ?';
   const args: any[] = [tableId];
 
-  // Equality/membership compare as TEXT so string fields that look numeric (e.g. a zip
-  // "01234") and real numbers both match; ordering operators compare numerically.
-  const textVal = (v: any) => (v === true || v === 'true') ? '1' : (v === false || v === 'false') ? '0' : String(v);
   for (const f of filters || []) {
-    if (!f || !f.column) continue;
-    const op = String(f.op || 'eq');
-    if (op === 'contains') {
-      sql += ` AND CAST(json_extract(data, '$.' || ?) AS TEXT) LIKE ?`;
-      args.push(f.column, `%${f.value}%`);
-    } else if (op === 'in') {
-      const vals = (Array.isArray(f.value) ? f.value : String(f.value ?? '').split(',').map(s => s.trim()))
-        .filter((v: any) => String(v) !== '');
-      if (vals.length === 0) continue;
-      sql += ` AND CAST(json_extract(data, '$.' || ?) AS TEXT) IN (${vals.map(() => '?').join(',')})`;
-      args.push(f.column, ...vals.map(textVal));
-    } else if (op === 'eq' || op === 'ne') {
-      sql += ` AND CAST(json_extract(data, '$.' || ?) AS TEXT) ${QUERY_OPS[op]} ?`;
-      args.push(f.column, textVal(f.value));
-    } else {
-      sql += ` AND json_extract(data, '$.' || ?) ${QUERY_OPS[op] || '='} ?`;
-      args.push(f.column, coerceQueryValue(f.value));
-    }
+    const c = buildFilterClause(f);
+    if (!c) continue;
+    sql += c.clause;
+    args.push(...c.params);
   }
 
   if (options.sort?.column) {

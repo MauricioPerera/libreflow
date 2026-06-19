@@ -10,30 +10,42 @@ export function getPath(obj: any, path?: string): any {
   return String(path).split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
 }
 
+/** Valor "vacío": null/undefined, string vacía o array vacío. */
+function isEmptyValue(v: any): boolean {
+  return v == null || (typeof v === 'string' && v === '') || (Array.isArray(v) && v.length === 0);
+}
+
+interface CmpCtx { a: any; b: any; aS: string; bS: string; aN: number; bN: number }
+
+// Tabla de comparadores (operador → función pura). Sustituye al switch gigante.
+const COMPARATORS: Record<string, (c: CmpCtx) => boolean> = {
+  equal: c => c.a == c.b || c.aS === c.bS,
+  notEqual: c => !(c.a == c.b || c.aS === c.bS),
+  contains: c => c.aS.includes(c.bS),
+  notContains: c => !c.aS.includes(c.bS),
+  startsWith: c => c.aS.startsWith(c.bS),
+  endsWith: c => c.aS.endsWith(c.bS),
+  greaterThan: c => c.aN > c.bN,
+  greaterOrEqual: c => c.aN >= c.bN,
+  lessThan: c => c.aN < c.bN,
+  lessOrEqual: c => c.aN <= c.bN,
+  isEmpty: c => isEmptyValue(c.a),
+  isNotEmpty: c => !isEmptyValue(c.a),
+  isTrue: c => c.a === true || c.aS === 'true',
+  isFalse: c => c.a === false || c.aS === 'false',
+};
+
 /** Compara dos valores con un operador. Igualdad laxa (5 == "5"); orden numérico. */
 export function compareValues(a: any, op: string, b: any): boolean {
-  const aS = a == null ? '' : String(a);
-  const bS = b == null ? '' : String(b);
-  const aN = Number(a);
-  const bN = Number(b);
-  const isEmpty = (v: any) => v == null || (typeof v === 'string' && v === '') || (Array.isArray(v) && v.length === 0);
-  switch (op) {
-    case 'equal': return a == b || aS === bS;
-    case 'notEqual': return !(a == b || aS === bS);
-    case 'contains': return aS.includes(bS);
-    case 'notContains': return !aS.includes(bS);
-    case 'startsWith': return aS.startsWith(bS);
-    case 'endsWith': return aS.endsWith(bS);
-    case 'greaterThan': return aN > bN;
-    case 'greaterOrEqual': return aN >= bN;
-    case 'lessThan': return aN < bN;
-    case 'lessOrEqual': return aN <= bN;
-    case 'isEmpty': return isEmpty(a);
-    case 'isNotEmpty': return !isEmpty(a);
-    case 'isTrue': return a === true || aS === 'true';
-    case 'isFalse': return a === false || aS === 'false';
-    default: return false;
-  }
+  const ctx: CmpCtx = {
+    a, b,
+    aS: a == null ? '' : String(a),
+    bS: b == null ? '' : String(b),
+    aN: Number(a),
+    bN: Number(b),
+  };
+  const cmp = COMPARATORS[op];
+  return cmp ? cmp(ctx) : false;
 }
 
 const asArray = (items: any): any[] => (Array.isArray(items) ? items : []);
