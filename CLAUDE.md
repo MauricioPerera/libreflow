@@ -184,8 +184,10 @@ exercise the running app, use the run skill: `node .claude/skills/run-libreflow/
   tabla (key→get / filters→query / sin filtros→listado paginado) y `libreflow_batch_rows` expone
   `batchDataTableRows` (append/update/delete/upsert/increment en una tx). `libreflow_save_workflow`
   **valida antes de guardar** (aborta con `issues` si es inválido). Los ids de workflow aceptan
-  `workflowId` (estándar) o `id` (alias legacy) vía `wfId()`. Las 4 lecturas viejas siguen como
-  **deprecated** (ocultables con `LF_MCP_HIDE_DEPRECATED=true`).
+  `workflowId` (estándar) o `id` (alias legacy) vía `wfId()`. `libreflow_run_workflow` acepta
+  `wait:false` → lanza la ejecución detached, pre-persiste `running` y devuelve `{executionId,status:'pending'}`
+  (el agente hace polling con `get_execution`); `wait` por defecto bloquea (comportamiento previo).
+  Las 4 lecturas viejas siguen como **deprecated** (ocultables con `LF_MCP_HIDE_DEPRECATED=true`).
   **Owner scoping (F2-MCP/F3):** `resolveScopedWorkflows` filters the exposed workflows by
   `scope.ownerId` (on BOTH the global `workflowIds:null` path and named `workflowIds:[…]` path);
   resources (datatable/workflow) honor it too. `ownerId === undefined` ⇒ no scoping (single-tenant

@@ -4,8 +4,9 @@ import {
   getWorkflows, 
   getWorkflowById, 
   saveWorkflow, 
-  getAllExecutions, 
+  getAllExecutions,
   getExecutionById,
+  saveExecution,
   getDataTables,
   saveDataTable,
   getDataTableRows,
@@ -166,7 +167,9 @@ const SYSTEM_TOOLS = [
   },
   {
     name: 'libreflow_run_workflow',
-    description: 'Manually trigger a workflow run and get its execution report.',
+    description: 'Ejecuta un workflow. Por defecto BLOQUEA y devuelve el reporte. Para flujos largos, ' +
+      'pasa "wait": false → lanza la ejecución en segundo plano y devuelve { executionId, status:"pending" }; ' +
+      'consulta el resultado con libreflow_get_execution.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -177,6 +180,7 @@ const SYSTEM_TOOLS = [
           description: 'Optional initial payload/variables to inject into the trigger.',
           additionalProperties: true
         },
+        wait: { type: 'boolean', description: 'Default true (bloquea hasta terminar). false → async: devuelve executionId + pending y haces polling con get_execution.' },
         concise: { type: 'boolean', description: 'Default true: return only success + succeeded-node outputs. Set false for the full node-by-node report.' }
       },
       required: []
@@ -767,6 +771,15 @@ const SYSTEM_TOOL_HANDLERS: Record<string, ToolHandler> = {
     const workflow = await getWorkflowById(wId);
     if (!workflow) return rpcText(id, `Workflow not found with ID: ${wId}`);
     const { executeWorkflowAndRecord } = await import('./executor.js');
+    // Async (wait:false): pre-persiste 'running' (para que un get_execution inmediato lo vea),
+    // lanza la ejecución detached y devuelve el executionId. El agente hace polling.
+    if (args.wait === false) {
+      const executionId = `exec-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      await saveExecution(executionId, wId, 'running', { running: true, startTime: new Date().toISOString() });
+      executeWorkflowAndRecord(workflow, args.payload || {}, { executionId })
+        .catch(err => console.error('[MCP] async run_workflow failed:', err));
+      return dataResult(id, { executionId, status: 'pending', workflowId: wId });
+    }
     const report = await executeWorkflowAndRecord(workflow, args.payload || {});
     // Conciso por defecto; el reporte nodo-a-nodo completo con concise:false o get_execution.
     return dataResult(id, args.concise === false ? report : conciseRunReport(report));
