@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { initDatabase, saveDataTable, getWorkflowById } from '../src/db.js';
+import { initDatabase, saveDataTable, getWorkflowById, getExecutionById } from '../src/db.js';
 import { dispatchMcpRpc } from '../src/mcp.js';
 
 // Optimizaciones de "Agentic DX": query_data (lectura unificada), batch_rows (escrituras en
@@ -69,6 +69,27 @@ describe('MCP Agentic DX', () => {
     const r = await call('libreflow_save_workflow', { workflowId: wId, name: 'bueno', nodes, connections: [{ source: 't', target: 'l' }] });
     expect(r.saved).toBe(true);
     expect(await getWorkflowById(wId)).not.toBeNull();
+  });
+
+  it('run_workflow wait:false devuelve executionId+pending y la ejecución termina en background', async () => {
+    const wId = `wf-async-${sfx}`;
+    await call('libreflow_save_workflow', { workflowId: wId, name: 'async', nodes: [
+      { id: 't', type: 'trigger', name: 'Start', parameters: {} },
+      { id: 'l', type: 'log', name: 'Log', parameters: { message: 'hola' } },
+    ], connections: [{ source: 't', target: 'l' }] });
+
+    const r = await call('libreflow_run_workflow', { workflowId: wId, wait: false });
+    expect(r.status).toBe('pending');
+    expect(typeof r.executionId).toBe('string');
+
+    // Polling hasta que el run detached termine.
+    let status = 'running';
+    for (let i = 0; i < 40 && status === 'running'; i++) {
+      await new Promise(res => setTimeout(res, 50));
+      const exec = await getExecutionById(r.executionId);
+      status = exec?.status ?? 'running';
+    }
+    expect(status).toBe('success');
   });
 
   it('alias workflowId: get_workflow acepta el "id" legacy', async () => {
