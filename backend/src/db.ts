@@ -173,6 +173,11 @@ export async function initDatabase() {
   await addColumnIfMissing('data_tables', 'owner_id', 'TEXT');
   await addColumnIfMissing('mcp_servers', 'owner_id', 'TEXT');
 
+  // Token de API por-usuario (para que un agente se autentique contra el MCP global vía Bearer).
+  // Texto plano a propósito: el dueño lo consulta y copia desde la UI; va siempre tras auth.
+  await addColumnIfMissing('users', 'api_token', 'TEXT');
+  await db.exec('CREATE INDEX IF NOT EXISTS idx_users_api_token ON users(api_token)');
+
   // Data-table state engine: optional unique key column on the table + per-row derived
   // key, enabling atomic upsert/increment and idempotency. NULL row_keys stay distinct
   // in SQLite unique indexes, so non-keyed tables are unaffected.
@@ -239,6 +244,7 @@ export interface UserRecord {
   email: string;
   password_hash: string;
   role: string;
+  api_token?: string | null;
   created_at?: string;
   updated_at?: string;
 }
@@ -286,6 +292,17 @@ export async function deleteUser(id: string): Promise<void> {
 /** Cambia la contraseña (hash ya derivado por el llamante). */
 export async function updateUserPassword(id: string, passwordHash: string): Promise<void> {
   await db.run('UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [passwordHash, id]);
+}
+
+/** Busca un usuario por su token de API (para autenticar agentes vía Bearer). */
+export async function getUserByApiToken(token: string): Promise<UserRecord | null> {
+  if (!token) return null;
+  return (await db.get('SELECT * FROM users WHERE api_token = ?', [token])) || null;
+}
+
+/** Asigna/reemplaza el token de API de un usuario. */
+export async function setUserApiToken(id: string, token: string): Promise<void> {
+  await db.run('UPDATE users SET api_token = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [token, id]);
 }
 
 // --- OWNERSHIP (auth multi-usuario, enforcement F2) ---

@@ -33,8 +33,19 @@
       </div>
       <div class="mcp-global-row">
         <span class="mcp-global-label">Auth</span>
-        <code class="code-font">Authorization: Bearer &lt;JWT o LF_API_KEY&gt;</code>
+        <code class="code-font">Authorization: Bearer &lt;token&gt;</code>
         <span class="mcp-global-hint">— en modo dev (sin <code>LF_API_KEY</code>) no requiere token</span>
+      </div>
+
+      <div class="mcp-global-row">
+        <span class="mcp-global-label">Token</span>
+        <template v-if="userToken">
+          <code class="code-font mcp-token">{{ showToken ? userToken : '•'.repeat(24) }}</code>
+          <button @click="showToken = !showToken" class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;">{{ showToken ? 'Ocultar' : 'Mostrar' }}</button>
+          <button @click="emit('copy', userToken)" class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;">Copiar</button>
+          <button @click="emit('regenerate-token')" class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px; border-color: hsla(var(--color-danger) / 0.3); color: hsl(var(--color-danger));">Regenerar</button>
+        </template>
+        <span v-else class="mcp-global-hint">Inicia sesión como usuario real para obtener un token (en dev no hay usuario persistente al que asignarlo).</span>
       </div>
 
       <details class="mcp-global-tools">
@@ -105,11 +116,13 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue';
 import { mcpServerUrl } from '../utils';
 
 defineProps<{
   servers: any[];
   loaded: boolean;
+  userToken?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -117,7 +130,10 @@ const emit = defineEmits<{
   (e: 'edit', server: any): void;
   (e: 'delete', id: string): void;
   (e: 'copy', text: string): void;
+  (e: 'regenerate-token'): void;
 }>();
+
+const showToken = ref(false);
 
 // URL del servidor MCP global (mismo origen + /api/mcp). En dev el frontend (:5173) proxya /api
 // al backend; un agente externo debe usar el origen del backend (:3000).
@@ -137,6 +153,7 @@ const globalUrl = `${window.location.origin}/api/mcp`;
 .mcp-global-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 4px 0; }
 .mcp-global-label { display: inline-block; min-width: 86px; font-size: 12px; font-weight: 600; color: hsl(var(--text-secondary)); text-transform: uppercase; letter-spacing: 0.4px; }
 .mcp-global-hint { font-size: 12px; color: hsl(var(--text-secondary)); }
+.mcp-token { word-break: break-all; }
 .mcp-global-tools { margin-top: 12px; font-size: 13px; }
 .mcp-global-tools summary { cursor: pointer; font-weight: 600; color: hsl(var(--text-secondary)); }
 .mcp-global-tools ul { margin: 8px 0 0; padding-left: 18px; }

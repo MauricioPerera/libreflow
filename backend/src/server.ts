@@ -45,6 +45,7 @@ import {
   createUser,
   deleteUser,
   getUserById,
+  setUserApiToken,
   updateUserPassword,
   countAdmins
 } from './db.js';
@@ -53,7 +54,7 @@ import { signToken } from './jwt.js';
 import { triggerManager } from './triggerManager.js';
 import { NodeRegistry } from './registry.js';
 import mcpRouter, { publicMcpRouter } from './mcp.js';
-import { requireAuth, verifyWebhookSignature } from './auth.js';
+import { requireAuth, verifyWebhookSignature, generateApiToken } from './auth.js';
 import { rateLimit } from './security.js';
 import { buildAuthorizationUrl, handleOAuthCallback } from './oauth2.js';
 import { parseFormFields, renderFormPage, renderCompletionPage, validateFormValues } from './forms.js';
@@ -144,6 +145,39 @@ app.post('/api/auth/password', async (req, res) => {
     }
     await updateUserPassword(u.id, hashPassword(String(newPassword)));
     return res.json({ success: true });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+// Token de API del usuario autenticado (Bearer para clientes MCP/agentes). Se genera al primer
+// acceso si no existe. Sólo para usuarios persistentes (no el admin sintético de dev).
+app.get('/api/auth/token', async (req, res) => {
+  try {
+    const u = (req as any).user;
+    const full = u?.id ? await getUserById(u.id) : null;
+    if (!full) {
+      return res.status(400).json({ error: 'No hay un usuario persistente al que asignar un token (auth desactivada en dev o sesión break-glass).' });
+    }
+    let token = full.api_token;
+    if (!token) { token = generateApiToken(); await setUserApiToken(full.id, token); }
+    return res.json({ token });
+  } catch (err: any) {
+    return serverError(res, err);
+  }
+});
+
+// Regenera el token del usuario autenticado (invalida el anterior).
+app.post('/api/auth/token/regenerate', async (req, res) => {
+  try {
+    const u = (req as any).user;
+    const full = u?.id ? await getUserById(u.id) : null;
+    if (!full) {
+      return res.status(400).json({ error: 'No hay un usuario persistente al que asignar un token (auth desactivada en dev o sesión break-glass).' });
+    }
+    const token = generateApiToken();
+    await setUserApiToken(full.id, token);
+    return res.json({ token });
   } catch (err: any) {
     return serverError(res, err);
   }
