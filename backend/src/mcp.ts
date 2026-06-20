@@ -24,6 +24,7 @@ import {
   queryDataTableRows,
   countDataTableRows,
   getDataTableById,
+  batchDataTableRows,
   assertOwnership
 } from './db.js';
 
@@ -131,18 +132,21 @@ const SYSTEM_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'The unique ID of the workflow to retrieve.' }
+        workflowId: { type: 'string', description: 'The unique ID of the workflow to retrieve.' },
+        id: { type: 'string', description: '[alias legacy de workflowId]' }
       },
-      required: ['id']
+      required: []
     }
   },
   {
     name: 'libreflow_save_workflow',
-    description: 'Save or update a workflow in the platform.',
+    description: 'Guarda o actualiza un workflow. Valida ANTES de guardar: si hay errores estructurales, ' +
+      'NO guarda y devuelve { saved:false, issues }. Si es válido, guarda y devuelve { saved:true, issues } (con warnings si los hay).',
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'The unique ID of the workflow.' },
+        workflowId: { type: 'string', description: 'The unique ID of the workflow.' },
+        id: { type: 'string', description: '[alias legacy de workflowId]' },
         name: { type: 'string', description: 'The name of the workflow.' },
         nodes: {
           type: 'array',
@@ -157,7 +161,7 @@ const SYSTEM_TOOLS = [
         onErrorWorkflowId: { type: 'string', description: 'Optional workflow ID to trigger on failure.' },
         description: { type: 'string', description: 'Optional human/agent-facing description; becomes the MCP tool description when this workflow is exposed.' }
       },
-      required: ['id', 'name', 'nodes', 'connections']
+      required: ['name', 'nodes', 'connections']
     }
   },
   {
@@ -167,6 +171,7 @@ const SYSTEM_TOOLS = [
       type: 'object',
       properties: {
         workflowId: { type: 'string', description: 'The ID of the workflow to run.' },
+        id: { type: 'string', description: '[alias legacy de workflowId]' },
         payload: {
           type: 'object',
           description: 'Optional initial payload/variables to inject into the trigger.',
@@ -174,7 +179,7 @@ const SYSTEM_TOOLS = [
         },
         concise: { type: 'boolean', description: 'Default true: return only success + succeeded-node outputs. Set false for the full node-by-node report.' }
       },
-      required: ['workflowId']
+      required: []
     }
   },
   {
@@ -191,9 +196,10 @@ const SYSTEM_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'The unique execution ID.' }
+        executionId: { type: 'string', description: 'The unique execution ID.' },
+        id: { type: 'string', description: '[alias legacy de executionId]' }
       },
-      required: ['id']
+      required: []
     }
   },
   {
@@ -249,6 +255,65 @@ const SYSTEM_TOOLS = [
     }
   },
   {
+    name: 'libreflow_query_data',
+    description: 'Lectura unificada de una tabla (reemplaza get_row/get_rows/query_rows/search_rows). ' +
+      'Con "key" → get-or-default de UNA fila. Con "filters" → query por operadores (eq/ne/gt/lt/gte/lte/contains/in) + sort. ' +
+      'Sin filtros → listado paginado (limit/offset) con total. Devuelve { mode, rows|row, ... }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tableId: { type: 'string', description: 'ID de la tabla.' },
+        key: { type: 'string', description: 'Si se indica, devuelve (o crea por defecto) la fila de esa clave (modo get).' },
+        defaults: { type: 'object', description: 'Valores por defecto si la fila por "key" no existe.', additionalProperties: true },
+        filters: {
+          type: 'array',
+          description: 'Filtros por operador: [{ "column": "status", "op": "eq", "value": "active" }]. Para "in", value es un array.',
+          items: {
+            type: 'object',
+            properties: {
+              column: { type: 'string' },
+              op: { type: 'string', enum: ['eq', 'ne', 'gt', 'lt', 'gte', 'lte', 'contains', 'in'] },
+              value: {}
+            },
+            required: ['column']
+          }
+        },
+        sort: { type: 'object', description: 'Orden: { "column": "score", "dir": "desc" }.', properties: { column: { type: 'string' }, dir: { type: 'string', enum: ['asc', 'desc'] } } },
+        limit: { type: 'number', description: 'Máx filas (default 20, máx 1000).' },
+        offset: { type: 'number', description: 'Filas a saltar (solo en listado sin filtros).' }
+      },
+      required: ['tableId']
+    }
+  },
+  {
+    name: 'libreflow_batch_rows',
+    description: 'Aplica VARIAS escrituras (append/update/delete/upsert/increment) en UNA transacción atómica (todo-o-nada). ' +
+      'Reemplaza N llamadas por una sola: ideal para insertar/actualizar muchos registros generados. Si una op falla, se revierte todo.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tableId: { type: 'string', description: 'ID de la tabla.' },
+        ops: {
+          type: 'array',
+          description: 'Lista de operaciones. Cada una: { "op": "append|update|delete|upsert|increment", rowId?, key?, data?, field?, amount? }.',
+          items: {
+            type: 'object',
+            properties: {
+              op: { type: 'string', enum: ['append', 'update', 'delete', 'upsert', 'increment'] },
+              rowId: { type: 'string', description: 'Para update/delete por id de fila.' },
+              key: { type: 'string', description: 'Para upsert/increment/delete por clave.' },
+              data: { type: 'object', description: 'Datos de la fila (append/update/upsert).', additionalProperties: true },
+              field: { type: 'string', description: 'Campo numérico (increment).' },
+              amount: { type: 'number', description: 'Cantidad a sumar (increment, default 1).' }
+            },
+            required: ['op']
+          }
+        }
+      },
+      required: ['tableId', 'ops']
+    }
+  },
+  {
     name: 'libreflow_upsert_data_table_row',
     description: 'Insert or update a row by the table key column (atomic, idempotent). Requires the table to have a key column.',
     inputSchema: {
@@ -276,7 +341,7 @@ const SYSTEM_TOOLS = [
   },
   {
     name: 'libreflow_get_data_table_row',
-    description: 'Get the row identified by key, creating it from defaults if absent (get-or-default state read).',
+    description: '[DEPRECATED → usa libreflow_query_data con "key"] Get the row identified by key, creating it from defaults if absent (get-or-default state read).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -289,7 +354,7 @@ const SYSTEM_TOOLS = [
   },
   {
     name: 'libreflow_query_data_table_rows',
-    description: 'Query rows with field operators, sorting and limit. Operators: eq, ne, gt, lt, gte, lte, contains, in.',
+    description: '[DEPRECATED → usa libreflow_query_data con "filters"] Query rows with field operators, sorting and limit. Operators: eq, ne, gt, lt, gte, lte, contains, in.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -319,7 +384,7 @@ const SYSTEM_TOOLS = [
   },
   {
     name: 'libreflow_get_data_table_rows',
-    description: 'Fetch rows from a data table (paginated; rows trimmed to { id, data }). Returns { total, returned, offset, truncated, rows }.',
+    description: '[DEPRECATED → usa libreflow_query_data sin filtros] Fetch rows from a data table (paginated; rows trimmed to { id, data }). Returns { total, returned, offset, truncated, rows }.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -354,9 +419,10 @@ const SYSTEM_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'The unique ID of the workflow to delete.' }
+        workflowId: { type: 'string', description: 'The unique ID of the workflow to delete.' },
+        id: { type: 'string', description: '[alias legacy de workflowId]' }
       },
-      required: ['id']
+      required: []
     }
   },
   {
@@ -365,15 +431,16 @@ const SYSTEM_TOOLS = [
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'The unique ID of the workflow.' },
+        workflowId: { type: 'string', description: 'The unique ID of the workflow.' },
+        id: { type: 'string', description: '[alias legacy de workflowId]' },
         active: { type: 'boolean', description: 'true to activate, false to deactivate.' }
       },
-      required: ['id', 'active']
+      required: ['active']
     }
   },
   {
     name: 'libreflow_search_data_table_rows',
-    description: 'Search rows in a data table by exact-match field filters.',
+    description: '[DEPRECATED → usa libreflow_query_data con "filters" (op eq)] Search rows in a data table by exact-match field filters.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -445,6 +512,8 @@ const TOOL_ANNOTATIONS: Record<string, any> = {
   libreflow_get_execution: { readOnlyHint: true },
   libreflow_validate_workflow: { readOnlyHint: true },
   libreflow_list_data_tables: { readOnlyHint: true },
+  libreflow_query_data: { readOnlyHint: true },
+  libreflow_get_data_table_row: { readOnlyHint: true },
   libreflow_get_data_table_rows: { readOnlyHint: true },
   libreflow_search_data_table_rows: { readOnlyHint: true },
   libreflow_query_data_table_rows: { readOnlyHint: true },
@@ -456,6 +525,15 @@ const TOOL_ANNOTATIONS: Record<string, any> = {
   libreflow_delete_data_table: { destructiveHint: true },
   libreflow_delete_data_table_row: { destructiveHint: true },
 };
+
+// Lecturas granulares reemplazadas por libreflow_query_data. Se mantienen por retrocompatibilidad;
+// se pueden ocultar de tools/list con LF_MCP_HIDE_DEPRECATED=true.
+const DEPRECATED_TOOLS = new Set([
+  'libreflow_get_data_table_row',
+  'libreflow_get_data_table_rows',
+  'libreflow_query_data_table_rows',
+  'libreflow_search_data_table_rows',
+]);
 
 export interface McpScope {
   workflowIds: string[] | null;
@@ -616,9 +694,12 @@ async function handleToolsList(id: any, scope: McpScope): Promise<RpcResult> {
     description: workflow.description || `Ejecuta el flujo LibreFlow: ${workflow.name}`,
     inputSchema: workflowInputSchema(workflow),
   }));
-  const systemTools = SYSTEM_TOOLS.map(t =>
-    TOOL_ANNOTATIONS[t.name] ? { ...t, annotations: TOOL_ANNOTATIONS[t.name] } : t
-  );
+  // Tools deprecadas (reemplazadas por libreflow_query_data). Siguen FUNCIONANDO (back-compat);
+  // con LF_MCP_HIDE_DEPRECATED=true se ocultan de tools/list para una superficie más limpia.
+  const hideDeprecated = process.env.LF_MCP_HIDE_DEPRECATED === 'true';
+  const systemTools = SYSTEM_TOOLS
+    .filter(t => !(hideDeprecated && DEPRECATED_TOOLS.has(t.name)))
+    .map(t => TOOL_ANNOTATIONS[t.name] ? { ...t, annotations: TOOL_ANNOTATIONS[t.name] } : t);
   const tools = scope.exposeSystemTools ? [...systemTools, ...workflowTools] : workflowTools;
   return rpcOk(id, { tools });
 }
@@ -640,6 +721,11 @@ function conciseRunReport(report: any): any {
 // --- Dispatch table de las system tools (libreflow_*). Cada handler es pequeño y puro de control. ---
 type ToolHandler = (id: any, args: any) => Promise<RpcResult> | RpcResult;
 
+// Resolución de identificadores con retrocompatibilidad: el nombre estándar tiene prioridad,
+// pero se acepta el alias legacy `id` (workflows) / lo que toque.
+const wfId = (args: any) => args.workflowId ?? args.id;
+const execId = (args: any) => args.executionId ?? args.id;
+
 const SYSTEM_TOOL_HANDLERS: Record<string, ToolHandler> = {
   libreflow_list_node_types: (id) => {
     const list = NodeRegistry.getAllNodeTypes().map(nodeDef => {
@@ -655,21 +741,28 @@ const SYSTEM_TOOL_HANDLERS: Record<string, ToolHandler> = {
   },
 
   libreflow_get_workflow: async (id, args) => {
-    if (!args.id) return missingParam(id, 'Missing id parameter');
-    const workflow = await getWorkflowById(args.id);
-    if (!workflow) return rpcText(id, `Workflow not found with ID: ${args.id}`);
+    const target = wfId(args);
+    if (!target) return missingParam(id, 'Missing workflowId parameter');
+    const workflow = await getWorkflowById(target);
+    if (!workflow) return rpcText(id, `Workflow not found with ID: ${target}`);
     return dataResult(id, workflow);
   },
 
   libreflow_save_workflow: async (id, args) => {
-    const { id: wId, name: wName, nodes = [], connections = [], onErrorWorkflowId, description: wDesc } = args;
-    if (!wId || !wName) return missingParam(id, 'Missing id or name parameter');
+    const { name: wName, nodes = [], connections = [], onErrorWorkflowId, description: wDesc } = args;
+    const wId = wfId(args);
+    if (!wId || !wName) return missingParam(id, 'Missing workflowId or name parameter');
+    // Valida ANTES de guardar: si hay errores estructurales, aborta y devuelve los issues.
+    const validation = validateWorkflow(nodes, connections);
+    if (!validation.valid) {
+      return dataResult(id, { saved: false, valid: false, issues: validation.issues });
+    }
     await saveWorkflow(wId, wName, nodes, connections, onErrorWorkflowId, wDesc);
-    return rpcText(id, `Workflow '${wName}' saved successfully.`);
+    return dataResult(id, { saved: true, valid: true, workflowId: wId, name: wName, issues: validation.issues });
   },
 
   libreflow_run_workflow: async (id, args) => {
-    const wId = args.workflowId;
+    const wId = wfId(args);
     if (!wId) return missingParam(id, 'Missing workflowId parameter');
     const workflow = await getWorkflowById(wId);
     if (!workflow) return rpcText(id, `Workflow not found with ID: ${wId}`);
@@ -685,9 +778,10 @@ const SYSTEM_TOOL_HANDLERS: Record<string, ToolHandler> = {
   },
 
   libreflow_get_execution: async (id, args) => {
-    if (!args.id) return missingParam(id, 'Missing id parameter');
-    const execution = await getExecutionById(args.id);
-    if (!execution) return rpcText(id, `Execution not found with ID: ${args.id}`);
+    const target = execId(args);
+    if (!target) return missingParam(id, 'Missing executionId parameter');
+    const execution = await getExecutionById(target);
+    if (!execution) return rpcText(id, `Execution not found with ID: ${target}`);
     return dataResult(id, execution);
   },
 
@@ -706,6 +800,35 @@ const SYSTEM_TOOL_HANDLERS: Record<string, ToolHandler> = {
     const tId = `table-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     await saveDataTable(tId, tName, columns, keyColumn || null);
     return rpcText(id, `Data table '${tName}' created successfully with ID: ${tId}`);
+  },
+
+  // Lectura unificada: key→get | filters→query | (nada)→listado paginado.
+  libreflow_query_data: async (id, args) => {
+    const tId = args.tableId;
+    if (!tId) return missingParam(id, 'Missing tableId parameter');
+    if (args.key !== undefined && args.key !== null && args.key !== '') {
+      const defaults = args.defaults && typeof args.defaults === 'object' ? args.defaults : {};
+      const row = await getOrCreateDataTableRow(tId, String(args.key), defaults);
+      return dataResult(id, { mode: 'get', row: slimRow(row) });
+    }
+    const filters = Array.isArray(args.filters) ? args.filters : [];
+    const effLimit = Math.min(1000, Math.max(1, Number(args.limit) || AGENT_ROW_LIMIT));
+    if (filters.length) {
+      const rows = await queryDataTableRows(tId, filters, { sort: args.sort, limit: effLimit });
+      return dataResult(id, { mode: 'query', returned: rows.length, limit: effLimit, truncated: rows.length >= effLimit, rows: rows.map(slimRow) });
+    }
+    const offset = Math.max(0, Number(args.offset) || 0);
+    const total = await countDataTableRows(tId);
+    const rows = await getDataTableRows(tId, effLimit, offset);
+    return dataResult(id, { mode: 'list', total, returned: rows.length, offset, truncated: offset + rows.length < total, rows: rows.map(slimRow) });
+  },
+
+  // Escrituras en lote (una transacción atómica): append/update/delete/upsert/increment.
+  libreflow_batch_rows: async (id, args) => {
+    const tId = args.tableId;
+    const ops = args.ops;
+    if (!tId || !Array.isArray(ops) || ops.length === 0) return missingParam(id, 'Missing tableId or non-empty ops[]');
+    return dataResult(id, await batchDataTableRows(tId, ops));
   },
 
   libreflow_upsert_data_table_row: async (id, args) => {
@@ -753,15 +876,16 @@ const SYSTEM_TOOL_HANDLERS: Record<string, ToolHandler> = {
   },
 
   libreflow_delete_workflow: async (id, args) => {
-    if (!args.id) return missingParam(id, 'Missing id parameter');
-    await deleteWorkflow(args.id);
-    return rpcText(id, `Workflow '${args.id}' deleted.`);
+    const target = wfId(args);
+    if (!target) return missingParam(id, 'Missing workflowId parameter');
+    await deleteWorkflow(target);
+    return rpcText(id, `Workflow '${target}' deleted.`);
   },
 
   libreflow_set_workflow_active: async (id, args) => {
-    const wId = args.id;
+    const wId = wfId(args);
     const active = !!args.active;
-    if (!wId) return missingParam(id, 'Missing id parameter');
+    if (!wId) return missingParam(id, 'Missing workflowId parameter');
     const workflow = await getWorkflowById(wId);
     if (!workflow) return rpcText(id, `Workflow not found with ID: ${wId}`);
     await setWorkflowActiveState(wId, active);
