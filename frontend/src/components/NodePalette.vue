@@ -21,20 +21,22 @@ const emit = defineEmits<{
       <h4 class="node-selector-title">Agregar Nodos</h4>
       <button @click="emit('update:collapsed', true)" class="sidebar-close-btn" title="Ocultar panel">✕</button>
     </div>
-    <button
-      v-for="nodeDef in nodeTypes"
-      :key="nodeDef.type"
-      @click="emit('add', nodeDef.type)"
-      class="node-drag-item"
-    >
-      <span
-        class="node-icon"
-        :style="{ background: nodeDef.ui?.gradient || 'var(--color-primary)' }"
+    <div class="node-selector-list">
+      <button
+        v-for="nodeDef in nodeTypes"
+        :key="nodeDef.type"
+        @click="emit('add', nodeDef.type)"
+        class="node-drag-item"
       >
-        {{ nodeDef.icon }}
-      </span>
-      {{ nodeDef.displayName }}
-    </button>
+        <span
+          class="node-icon"
+          :style="{ background: nodeDef.ui?.gradient || 'var(--color-primary)' }"
+        >
+          {{ nodeDef.icon }}
+        </span>
+        {{ nodeDef.displayName }}
+      </button>
+    </div>
   </aside>
 
   <!-- Botón flotante para reabrir la paleta (solo cuando está colapsada) -->
