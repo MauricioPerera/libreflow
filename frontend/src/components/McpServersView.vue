@@ -10,6 +10,46 @@
       </button>
     </div>
 
+    <!-- Servidor MCP global: punto de entrada para que un agente cree/ejecute flujos. -->
+    <div class="mcp-global-card">
+      <div class="mcp-global-head">
+        <h3 class="mcp-global-title">🌐 Servidor MCP global</h3>
+        <span class="status-badge success">Siempre activo · acotado a tu usuario</span>
+      </div>
+      <p class="subview-desc" style="margin: 0 0 12px;">
+        Punto de entrada principal para conectar un agente que <strong>cree, valide y ejecute flujos</strong>.
+        Expone las herramientas de sistema (<code>libreflow_*</code>) y los recursos (data tables y definiciones
+        de flujo), todo acotado a tu usuario.
+      </p>
+
+      <div class="mcp-global-row">
+        <span class="mcp-global-label">URL</span>
+        <code class="code-font">{{ globalUrl }}</code>
+        <button @click="emit('copy', globalUrl)" class="btn btn-secondary" style="padding: 2px 8px; font-size: 11px;">Copiar</button>
+      </div>
+      <div class="mcp-global-row">
+        <span class="mcp-global-label">Transporte</span>
+        <code class="code-font">Streamable HTTP (JSON-RPC)</code>
+      </div>
+      <div class="mcp-global-row">
+        <span class="mcp-global-label">Auth</span>
+        <code class="code-font">Authorization: Bearer &lt;JWT o LF_API_KEY&gt;</code>
+        <span class="mcp-global-hint">— en modo dev (sin <code>LF_API_KEY</code>) no requiere token</span>
+      </div>
+
+      <details class="mcp-global-tools">
+        <summary>Herramientas de sistema (<code>libreflow_*</code>)</summary>
+        <ul>
+          <li><strong>Flujos:</strong> list_node_types · list_workflows · get_workflow · <strong>save_workflow</strong> (crear/actualizar) · validate_workflow · run_workflow · set_workflow_active · delete_workflow</li>
+          <li><strong>Ejecuciones:</strong> list_executions · get_execution</li>
+          <li><strong>Data tables:</strong> create_data_table · list_data_tables · query/get/add/update/delete rows · upsert · increment · delete_data_table</li>
+        </ul>
+        <p class="mcp-global-hint" style="margin: 6px 0 0;">
+          Flujo típico de un agente: <code>list_node_types</code> → <code>save_workflow</code> → <code>validate_workflow</code> → <code>run_workflow</code>.
+        </p>
+      </details>
+    </div>
+
     <div class="table-container">
       <table class="dashboard-table">
         <thead>
@@ -78,4 +118,27 @@ const emit = defineEmits<{
   (e: 'delete', id: string): void;
   (e: 'copy', text: string): void;
 }>();
+
+// URL del servidor MCP global (mismo origen + /api/mcp). En dev el frontend (:5173) proxya /api
+// al backend; un agente externo debe usar el origen del backend (:3000).
+const globalUrl = `${window.location.origin}/api/mcp`;
 </script>
+
+<style scoped>
+.mcp-global-card {
+  border: 1px solid hsl(var(--border-color));
+  border-radius: var(--radius-md);
+  background: hsla(var(--color-primary) / 0.04);
+  padding: 16px 18px;
+  margin-bottom: 20px;
+}
+.mcp-global-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.mcp-global-title { margin: 0; font-size: 15px; }
+.mcp-global-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 4px 0; }
+.mcp-global-label { display: inline-block; min-width: 86px; font-size: 12px; font-weight: 600; color: hsl(var(--text-secondary)); text-transform: uppercase; letter-spacing: 0.4px; }
+.mcp-global-hint { font-size: 12px; color: hsl(var(--text-secondary)); }
+.mcp-global-tools { margin-top: 12px; font-size: 13px; }
+.mcp-global-tools summary { cursor: pointer; font-weight: 600; color: hsl(var(--text-secondary)); }
+.mcp-global-tools ul { margin: 8px 0 0; padding-left: 18px; }
+.mcp-global-tools li { margin-bottom: 4px; }
+</style>
