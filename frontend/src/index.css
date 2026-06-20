@@ -264,7 +264,22 @@ body {
   z-index: 5;
   box-shadow: var(--shadow-md);
   width: 200px;
+  /* Acota la altura al viewport (top:20px + 20px de margen inferior) para que la lista pueda
+     scrollear en vez de recortarse cuando hay muchos nodos. */
+  max-height: calc(100vh - 40px);
+  overflow: hidden;
   transition: transform var(--transition-normal), opacity var(--transition-normal);
+}
+
+/* Lista de nodos scrollable; la cabecera ("Agregar Nodos") queda fija arriba. */
+.node-selector-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  min-height: 0; /* permite encoger dentro del flex y activar el scroll */
+  margin-right: -8px; /* deja sitio a la barra de scroll sin desalinear los botones */
+  padding-right: 8px;
 }
 
 .node-selector.collapsed {
