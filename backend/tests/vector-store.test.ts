@@ -56,12 +56,14 @@ describe('vectorStore (RAG)', () => {
 
   it('indexTable: indexa las filas de una data table (columna de texto) y luego busca', async () => {
     vi.stubGlobal('fetch', stubFetch());
-    const tableId = 'tbl-vs-' + Math.random().toString(36).slice(2, 7);
-    const tcol = 'kbtbl-' + Math.random().toString(36).slice(2, 7);
+    const sfx = Math.random().toString(36).slice(2, 7);
+    const tableId = 'tbl-vs-' + sfx;
+    const tcol = 'kbtbl-' + sfx;
+    const rid = (n: number) => `r${n}-${sfx}`; // ids únicos: data_table_rows.id es PK global
     await saveDataTable(tableId, tableId, [{ name: 'contenido', type: 'string' }], null, owner);
-    await addDataTableRow(tableId, 'r1', { contenido: 'el perro ladra fuerte' });
-    await addDataTableRow(tableId, 'r2', { contenido: 'el coche acelera' });
-    await addDataTableRow(tableId, 'r3', { contenido: '' }); // sin texto -> se omite
+    await addDataTableRow(tableId, rid(1), { contenido: 'el perro ladra fuerte' });
+    await addDataTableRow(tableId, rid(2), { contenido: 'el coche acelera' });
+    await addDataTableRow(tableId, rid(3), { contenido: '' }); // sin texto -> se omite
 
     const node = NodeRegistry.getNodeType('vectorStore')!;
     const r: any = await node.execute(
@@ -71,7 +73,7 @@ describe('vectorStore (RAG)', () => {
     expect(r.indexed).toBe(2); // la fila vacía se omite
 
     const matches = await searchVectors(owner, tcol, 'mi perro', 1, cfg);
-    expect(matches[0].id).toBe('r1');                 // id = id de la fila
-    expect(matches[0].metadata._rowId).toBe('r1');    // metadata conserva la fila
+    expect(matches[0].id).toBe(rid(1));                 // id = id de la fila
+    expect(matches[0].metadata._rowId).toBe(rid(1));    // metadata conserva la fila
   });
 });

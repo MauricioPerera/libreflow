@@ -1,9 +1,15 @@
 import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { verifyToken } from './jwt.js';
+import { getUserByApiToken } from './db.js';
 
 /** Usuario resuelto por requireAuth y adjuntado a la request (lo consume el enforcement F2). */
 export interface AuthUser { id: string; email?: string; role: string }
+
+/** Genera un token de API por-usuario (Bearer) para clientes MCP/agentes. */
+export function generateApiToken(): string {
+  return 'lf_' + crypto.randomBytes(24).toString('hex');
+}
 
 const API_KEY = process.env.LF_API_KEY;
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -33,32 +39,42 @@ export function constantTimeEqual(a: string, b: string): boolean {
  * Accepts the key via `x-api-key` header or `Authorization: Bearer <key>`.
  * When LF_API_KEY is unset (dev only) the guard is a no-op.
  */
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  const headerKey = req.header('x-api-key');
-  const bearer = (req.header('authorization') || '').replace(/^Bearer\s+/i, '');
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
+  try {
+    const headerKey = req.header('x-api-key');
+    const bearer = (req.header('authorization') || '').replace(/^Bearer\s+/i, '');
 
-  // 1) JWT de usuario (multi-usuario): si verifica, adjunta el usuario y pasa.
-  if (bearer) {
-    const payload = verifyToken(bearer);
-    if (payload && payload.sub) {
-      (req as any).user = { id: payload.sub, email: payload.email, role: payload.role || 'user' } as AuthUser;
+    if (bearer) {
+      // 1) JWT de usuario (multi-usuario): si verifica, adjunta el usuario y pasa.
+      const payload = verifyToken(bearer);
+      if (payload && payload.sub) {
+        (req as any).user = { id: payload.sub, email: payload.email, role: payload.role || 'user' } as AuthUser;
+        return next();
+      }
+      // 2) Token de API por-usuario (Bearer lf_...): resuelve al usuario dueño del token.
+      const tokenUser = await getUserByApiToken(bearer);
+      if (tokenUser) {
+        (req as any).user = { id: tokenUser.id, email: tokenUser.email, role: tokenUser.role } as AuthUser;
+        return next();
+      }
+    }
+
+    // 3) Dev sin API key: auth deshabilitada → admin implícito.
+    if (!API_KEY) {
+      (req as any).user = { id: 'dev', role: 'admin' } as AuthUser;
       return next();
     }
-  }
 
-  // 2) Dev sin API key: auth deshabilitada → admin implícito.
-  if (!API_KEY) {
-    (req as any).user = { id: 'dev', role: 'admin' } as AuthUser;
-    return next();
+    // 4) API key global = admin break-glass (compatibilidad hacia atrás).
+    const provided = headerKey || bearer;
+    if (provided && safeEqual(provided, API_KEY)) {
+      (req as any).user = { id: 'apikey-admin', role: 'admin' } as AuthUser;
+      return next();
+    }
+    return res.status(401).json({ error: 'Unauthorized' });
+  } catch (err) {
+    return res.status(500).json({ error: 'Auth error' });
   }
-
-  // 3) API key global = admin break-glass (compatibilidad hacia atrás).
-  const provided = headerKey || bearer;
-  if (provided && safeEqual(provided, API_KEY)) {
-    (req as any).user = { id: 'apikey-admin', role: 'admin' } as AuthUser;
-    return next();
-  }
-  return res.status(401).json({ error: 'Unauthorized' });
 }
 
 const WEBHOOK_SECRET = process.env.LF_WEBHOOK_SECRET;

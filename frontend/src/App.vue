@@ -82,10 +82,12 @@
         v-if="activeSubView === 'mcpservers'"
         :servers="mcpServersList"
         :loaded="dashboardLoaded"
+        :user-token="userMcpToken"
         @create="openCreateMcpServerModal"
         @edit="openEditMcpServerModal"
         @delete="deleteMcpServerFromDb"
         @copy="copyMcpText"
+        @regenerate-token="regenerateUserMcpToken"
       />
 
       <!-- VECTOR STORES SUBVIEW (RAG) -->
@@ -1399,8 +1401,28 @@ const onSelectSubView = (view: string) => {
   if (view === 'executions') fetchGlobalExecutions();
   else if (view === 'credentials') fetchCredentials();
   else if (view === 'datatables') fetchDataTables();
-  else if (view === 'mcpservers') { fetchMcpServers(); fetchSavedWorkflows(); }
+  else if (view === 'mcpservers') { fetchMcpServers(); fetchSavedWorkflows(); fetchUserMcpToken(); }
   else if (view === 'vectorstores') fetchVectorStores();
+};
+
+// Token de API del usuario para el servidor MCP global (ver/regenerar desde la card).
+const userMcpToken = ref<string | null>(null);
+const fetchUserMcpToken = async () => {
+  try {
+    const res = await fetch('/api/auth/token');
+    userMcpToken.value = res.ok ? (await res.json()).token : null;
+  } catch {
+    userMcpToken.value = null;
+  }
+};
+const regenerateUserMcpToken = async () => {
+  if (!confirm('¿Regenerar el token? El anterior dejará de funcionar inmediatamente.')) return;
+  try {
+    const res = await fetch('/api/auth/token/regenerate', { method: 'POST' });
+    if (res.ok) userMcpToken.value = (await res.json()).token;
+  } catch (err) {
+    console.error('Error regenerating token:', err);
+  }
 };
 
 // Borra una colección de vectores y recarga la lista.
