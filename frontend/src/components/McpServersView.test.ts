@@ -23,6 +23,17 @@ describe('McpServersView', () => {
     expect(tokenBtns).toHaveLength(1);
   });
 
+  it('muestra la tarjeta del servidor MCP global (URL /api/mcp, auth y system tools) y copia su URL', async () => {
+    const w = mount(McpServersView, { props: { servers, loaded: true } });
+    const card = w.find('.mcp-global-card');
+    expect(card.exists()).toBe(true);
+    expect(card.text()).toContain('/api/mcp');
+    expect(card.text()).toContain('Bearer');
+    expect(card.text()).toContain('save_workflow');
+    await card.find('button').trigger('click'); // botón Copiar de la tarjeta global
+    expect(w.emitted('copy')![0][0]).toContain('/api/mcp');
+  });
+
   it('muestra estado de carga y vacío', () => {
     expect(mount(McpServersView, { props: { servers: [], loaded: false } }).text()).toContain('Cargando servidores');
     expect(mount(McpServersView, { props: { servers: [], loaded: true } }).text()).toContain('No tienes servidores MCP');
@@ -33,7 +44,7 @@ describe('McpServersView', () => {
     await w.find('.btn-primary').trigger('click');
     expect(w.emitted('create')).toBeTruthy();
 
-    const copyUrlBtns = w.findAll('button').filter((b) => b.text() === 'Copiar');
+    const copyUrlBtns = w.findAll('tbody button').filter((b) => b.text() === 'Copiar');
     await copyUrlBtns[0].trigger('click');
     expect(w.emitted('copy')![0][0]).toContain('/mcp/s1');
 
